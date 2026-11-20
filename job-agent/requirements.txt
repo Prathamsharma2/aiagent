@@ -1,0 +1,10 @@
+playwright
+beautifulsoup4
+requests[socks]
+stem
+python-dotenv
+openai
+pypdf2
+flask
+playwright-stealth
+schedule
