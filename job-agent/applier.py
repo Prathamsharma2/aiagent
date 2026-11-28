@@ -31,12 +31,27 @@ class JobApplier:
             args=browser_args,
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        self.page = self.browser_context.new_page()
+        self.page = self.browser_context.pages[0] if self.browser_context.pages else self.browser_context.new_page()
         Stealth().apply_stealth_sync(self.page)
         
-        print("💡 TIP: Agar browser mein login nahi hai, toh abhi login kar lein.")
-        print("⏳ 2 seconds wait - Abhi login kar sakte hain...")
-        time.sleep(2)
+        self.ensure_login()
+
+    def ensure_login(self):
+        """Verifies if the user is logged into LinkedIn; if not, pauses and waits for user to log in."""
+        cookies = self.browser_context.cookies("https://www.linkedin.com")
+        has_li_at = any(c.get("name") == "li_at" for c in cookies)
+        
+        if not has_li_at:
+            print("\n" + "="*65)
+            print("🔐 LINKEDIN LOGIN REQUIRED")
+            print("Aapka browser khul chuka hai. Kripya apna LinkedIn login karein.")
+            print("Login karne ke baad terminal mein ENTER dabayein taaki agent continue kar sake.")
+            print("="*65 + "\n")
+            self.page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+            input("👉 LinkedIn login complete hone ke baad yahan ENTER dabayein: ")
+            print("✅ Login completed! Continuing job search...")
+        else:
+            print("✅ LinkedIn session verified (Logged in).")
 
     def _screenshot(self, name):
         """Save a debug screenshot."""
@@ -49,8 +64,8 @@ class JobApplier:
 
         print(f"🚀 Navigating to: {job_url}")
         try:
-            self.page.goto(job_url, timeout=60000, wait_until="load")
-            time.sleep(1)
+            self.page.goto(job_url, timeout=45000, wait_until="domcontentloaded")
+            time.sleep(3)
         except Exception as e:
             print(f"📊 Status: FAILED (Navigation Error: {e})")
             return False
@@ -58,67 +73,104 @@ class JobApplier:
         self._screenshot("after_navigate")
 
         try:
-            # --- Click job cards until we find one with Easy Apply ---
-            job_cards = self.page.locator(".job-card-container").all()
-            if not job_cards:
-                job_cards = self.page.locator("li.jobs-search-results__list-item").all()
-            if not job_cards:
-                job_cards = self.page.locator("[data-occludable-job-id]").all()
-
             easy_apply_selectors = [
                 ".jobs-apply-button--top-card",
                 ".jobs-s-apply button",
                 "button.jobs-apply-button",
                 "button:has-text('Easy Apply')",
+                "button:has-text('Apply now')",
+                "button[aria-label*='Easy Apply']",
             ]
 
             applied_clicked = False
-            for idx, card in enumerate(job_cards):
-                try:
-                    # Scroll card into view and click
-                    card.scroll_into_view_if_needed()
-                    card.click()
-                    time.sleep(1)
 
-                    # Look for 'Easy Apply' button
-                    for sel in easy_apply_selectors:
-                        if self.page.is_visible(sel, timeout=500):
-                            self.page.click(sel)
-                            print(f"✅ Clicked Easy Apply on job card #{idx+1}!")
-                            applied_clicked = True
-                            time.sleep(1)
+            # 1. First check if Easy Apply button is already directly visible on this page
+            for sel in easy_apply_selectors:
+                try:
+                    btn = self.page.locator(sel).first
+                    if btn.is_visible(timeout=800):
+                        btn.click()
+                        print(f"✅ Clicked Easy Apply directly on page ({sel})!")
+                        applied_clicked = True
+                        time.sleep(1.5)
+                        break
+                except:
+                    pass
+
+            # 2. If not directly visible, search for job card elements to click
+            if not applied_clicked:
+                job_selectors = [
+                    "a[href*='/jobs/view/']",
+                    ".job-card-container",
+                    "li.jobs-search-results__list-item",
+                    "li.jobs-search-results-list__list-item",
+                    "[data-occludable-job-id]",
+                    "div[data-job-id]",
+                    "li[data-view-name]",
+                    ".jobs-search__results-list li",
+                ]
+
+                job_cards = []
+                for sel in job_selectors:
+                    elements = self.page.locator(sel).all()
+                    if elements:
+                        job_cards = elements
+                        break
+
+                print(f"📋 Found {len(job_cards)} job elements on page.")
+
+                for idx, card in enumerate(job_cards[:10]):
+                    try:
+                        card.scroll_into_view_if_needed()
+                        card.click()
+                        time.sleep(1.5)
+
+                        for sel in easy_apply_selectors:
+                            btn = self.page.locator(sel).first
+                            if btn.is_visible(timeout=800):
+                                btn.click()
+                                print(f"✅ Clicked Easy Apply on job #{idx+1}!")
+                                applied_clicked = True
+                                time.sleep(1.5)
+                                break
+
+                        if applied_clicked:
                             break
-                    
-                    if applied_clicked:
-                        break  # We got one! Exit the loop to fill the form.
-                    else:
-                        print(f"  ⏭️ Job card #{idx+1} already applied or no Easy Apply. Trying next...")
-                except Exception as e:
-                    print(f"  ⚠️ Failed to click job card #{idx+1}: {e}")
-                    continue
+                        else:
+                            print(f"  ⏭️ Job #{idx+1} does not have Easy Apply. Checking next...")
+                    except Exception as e:
+                        continue
 
             if not applied_clicked:
                 self._screenshot("no_easy_apply_found")
                 print("📊 Status: SKIPPED (No valid Easy Apply button found on this page)")
                 return False
 
-            # --- Handle the Easy Apply MODAL ---
-            # Wait for the modal to appear
+            # --- Handle the Easy Apply MODAL / FORM ---
             modal_appeared = False
-            for modal_sel in [
-                ".jobs-easy-apply-content",
-                ".jobs-easy-apply-modal",
-                "[data-test-modal]",
-                ".artdeco-modal__content",
-            ]:
-                try:
-                    self.page.wait_for_selector(modal_sel, timeout=2000)
-                    print(f"✅ Easy Apply modal detected: {modal_sel}")
-                    modal_appeared = True
+            for _ in range(8):
+                for modal_sel in [
+                    ".jobs-easy-apply-content",
+                    ".jobs-easy-apply-modal",
+                    "[data-test-modal]",
+                    ".artdeco-modal__content",
+                    "div[role='dialog']",
+                    "button[aria-label='Continue to next step']",
+                    "button:has-text('Next')",
+                    "button:has-text('Review')",
+                    "button:has-text('Submit application')",
+                ]:
+                    try:
+                        if self.page.is_visible(modal_sel, timeout=300):
+                            print(f"✅ Easy Apply flow active (detected: {modal_sel})")
+                            modal_appeared = True
+                            break
+                    except:
+                        pass
+                if modal_appeared:
                     break
-                except:
-                    pass
-            
+                time.sleep(0.5)
+
             if not modal_appeared:
                 self._screenshot("modal_not_found")
                 print("📊 Status: FAILED (Easy Apply modal did not open)")
@@ -193,12 +245,13 @@ class JobApplier:
             self._screenshot("exception_error")
             return False
 
-    def _click_if_visible(self, selectors, timeout=100):
+    def _click_if_visible(self, selectors, timeout=1000):
         """Try a list of selectors; click the first visible one. Returns True if clicked."""
         for sel in selectors:
             try:
-                if self.page.is_visible(sel, timeout=timeout):
-                    self.page.click(sel)
+                locator = self.page.locator(sel).first
+                if locator.is_visible(timeout=timeout):
+                    locator.click()
                     return True
             except:
                 pass

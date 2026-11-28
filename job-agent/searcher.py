@@ -32,23 +32,28 @@ class JobSearcher:
             "Data Science Engineer",
         ]
 
-    def _build_linkedin_jobs(self, role, location="India", count=10):
+    def _build_linkedin_jobs(self, role, location="India", count=25, time_filter=None):
         """
         Build LinkedIn Easy Apply job URLs for a given role.
         LinkedIn Easy Apply filter: f_AL=true
+        Includes geoId=102713980 for India to avoid local geofencing.
         """
         query = urllib.parse.quote(role)
         loc   = urllib.parse.quote(location)
+        geo_id = "&geoId=102713980" if location.lower() == "india" else ""
+        
         base  = (
             f"https://www.linkedin.com/jobs/search/"
-            f"?keywords={query}&location={loc}&f_AL=true&f_TPR=r86400"
-            # f_TPR=r86400 → posted in the last 24 hours
+            f"?keywords={query}&location={loc}{geo_id}&f_AL=true"
         )
+        if time_filter:
+            base += f"&f_TPR={time_filter}"
+
         print(f"  🌐 LinkedIn URL: {base}")
 
         # Generate job-page entries (each ?start=N loads the next set of results)
         jobs = []
-        for page_offset in range(0, count, 25):
+        for page_offset in range(0, max(count, 25), 25):
             jobs.append({
                 "title": role,
                 "url": f"{base}&start={page_offset}",
@@ -75,6 +80,13 @@ class JobSearcher:
             time.sleep(0.2)
 
         print(f"\n✅ Total job search targets: {len(all_jobs)}")
+        return all_jobs
+
+    # Search across multiple roles
+    def search_jobs_for_roles(self, roles, location="India", count_per_role=25):
+        all_jobs = []
+        for r in roles:
+            all_jobs.extend(self._build_linkedin_jobs(r, location, count=count_per_role))
         return all_jobs
 
     # kept for backwards-compatibility

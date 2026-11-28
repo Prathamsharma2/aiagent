@@ -23,18 +23,20 @@ def run_agent():
     print("🔍 Analyzing your resume...")
     analysis = analyzer.analyze()
     print(f"✅ Found skills: {', '.join(analysis['top_skills'])}")
-    primary_role = analysis['roles'][0]
+    roles = analysis.get('roles', ['Data Scientist'])
+    print(f"🎯 Target Roles: {', '.join(roles)}")
 
     # Letter Generator
     cl_gen = CoverLetterGenerator("Pratham Sharma", analysis['top_skills'])
 
     # 3. Search for Jobs
     print("🏹 Opening Hunting Grounds...")
-    jobs = searcher.search_jobs(primary_role, "India") 
+    jobs = searcher.search_jobs_for_roles(roles, location="India", count_per_role=25)
+    print(f"📋 Total job targets queued: {len(jobs)}")
 
+    applied_count = 0
     try:
         # 4. Autonomous Loop
-        applied_count = 0
         for job in jobs:
             try:
                 # Generate Custom Cover Letter
@@ -43,8 +45,8 @@ def run_agent():
                 # ⬇️ APNI REAL INFO YAHAN BHAR DO ⬇️
                 user_data = {
                     "name": "Pratham Sharma",
-                    "email": "kkrpratham@gmail.com",   # <-- Apna real email dalo
-                    "phone": "+91 ",         # <-- Apna real phone dalo
+                    "email": "kkrpratham33@gmail.com",
+                    "phone": "+91 7988105180",
                     "cover_letter": cover_letter
                 }
 
@@ -67,7 +69,16 @@ def run_agent():
             except Exception as e:
                 print(f"❌ Critical loop error: {e}. Moving to next.")
     finally:
+        print("\n" + "="*50)
+        print(f"🏁 Summary: Total jobs successfully applied = {applied_count}")
+        if applied_count == 0:
+            print("💡 TIP: Browser open hai taaki aap status dekh sakein.")
+            try:
+                input("👉 Browser band karne ke liye ENTER dabayein: ")
+            except (KeyboardInterrupt, EOFError):
+                pass
         applier.stop_session()
+        print("👋 Session finished.")
 
 if __name__ == "__main__":
     run_agent()
