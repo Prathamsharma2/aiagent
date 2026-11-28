@@ -231,6 +231,7 @@ class JobApplier:
             error_elements = page.query_selector_all(".artdeco-inline-feedback--error, [data-test-form-builder-error]")
             for err in error_elements:
                 try:
+                    err_text = (err.inner_text() or "").lower()
                     parent = err.query_selector(
                         "xpath=ancestor::div[contains(@class, 'fb-dash-form-element') or contains(@class, 'jobs-easy-apply-form-section') or contains(@class, 'artdeco-text-input')] | ancestor::fieldset"
                     ) or err.query_selector("xpath=..")
@@ -242,8 +243,10 @@ class JobApplier:
                         tag = inp.evaluate("el => el.tagName.toLowerCase()")
                         if tag == "textarea":
                             inp.fill("Yes, I have extensive relevant experience.")
-                        elif t in ["text", "number"]:
+                        elif "number" in err_text or "whole number" in err_text or t == "number":
                             inp.fill("2")
+                        elif t == "text":
+                            inp.fill("2" if any(w in err_text for w in ["number", "digit", "decimal", "range", "between"]) else "Yes")
                         elif t in ["radio", "checkbox"]:
                             inp.check(force=True)
                         elif tag == "select":
@@ -253,20 +256,21 @@ class JobApplier:
                 except:
                     pass
 
-            # 3. Unchecked required radio fieldset
-            for fieldset in page.query_selector_all("fieldset"):
+            # 3. Any unchecked radio buttons on the page
+            all_radios = page.query_selector_all("input[type='radio']")
+            seen_radio_names = set()
+            for r in all_radios:
                 try:
-                    checked = fieldset.query_selector("input[type='radio']:checked")
-                    if not checked:
-                        radios = fieldset.query_selector_all("input[type='radio']")
-                        for r in radios:
-                            val = (r.get_attribute("value") or "").lower()
-                            if val == "yes":
-                                r.check(force=True)
-                                break
-                        else:
-                            if radios:
-                                radios[0].check(force=True)
+                    r_name = r.get_attribute("name") or ""
+                    if r_name and r_name not in seen_radio_names:
+                        seen_radio_names.add(r_name)
+                        group = [rad for rad in all_radios if rad.get_attribute("name") == r_name]
+                        if not any(rad.is_checked() for rad in group):
+                            yes_r = next((rad for rad in group if (rad.get_attribute("value") or "").lower() == "yes"), None)
+                            if yes_r:
+                                yes_r.check(force=True)
+                            elif group:
+                                group[0].check(force=True)
                 except:
                     pass
 
@@ -396,9 +400,13 @@ class JobApplier:
             # Anti-freeze check: did the step advance after clicking Next?
             if current_text and current_text == previous_dialog_text:
                 stuck_step_count += 1
-                print(f"  ⚠️ Step did not advance (stuck check {stuck_step_count}/3)... applying self-healing...")
+                print(f"  ⚠️ Step did not advance (stuck check {stuck_step_count}/6)... applying self-healing...")
                 self._smart_handle_validation_errors(self.page, user_data)
-                if stuck_step_count >= 3:
+                if stuck_step_count >= 6:
+                    try:
+                        self.page.screenshot(path="job-agent/data/last_stuck_form.png")
+                    except:
+                        pass
                     print("  🧠 Smart Decision: Form requires complex manual input. Discarding cleanly to keep hunt moving!")
                     return False
             else:
@@ -882,13 +890,23 @@ class JobApplier:
 
                     aria_label = (inp.get_attribute("aria-label") or "").lower()
                     placeholder = (inp.get_attribute("placeholder") or "").lower()
-                    context = f"{label_text} {aria_label} {placeholder}"
+                    inp_name = (inp.get_attribute("name") or "").lower()
+                    context = f"{label_text} {aria_label} {placeholder} {inp_name}"
 
-                    if any(w in context for w in ["year", "experience", "exp"]):
+                    is_num = (inp.get_attribute("type") or "").lower() == "number" or "number" in (inp.get_attribute("inputmode") or "")
+
+                    if any(w in context for w in [
+                        "year", "experience", "exp", "scale", "rating", "score",
+                        "python", "react", "sql", "aws", "node", "fastapi", "django",
+                        "java", "javascript", "typescript", "c++", "c#", "golang",
+                        "machine learning", "data", "ml", "ai", "docker", "kubernetes",
+                        "git", "linux", "cloud", "api", "rest", "backend", "frontend",
+                        "html", "css", "vue", "angular", "spark", "hadoop", "pandas"
+                    ]):
                         inp.fill("2")
-                    elif any(w in context for w in ["salary", "ctc", "lpa", "package", "compensation"]):
+                    elif any(w in context for w in ["salary", "ctc", "lpa", "package", "compensation", "remuneration"]):
                         inp.fill("600000")
-                    elif any(w in context for w in ["notice", "period"]):
+                    elif any(w in context for w in ["notice", "period", "days"]):
                         inp.fill("30")
                     elif any(w in context for w in ["linkedin", "profile"]):
                         inp.fill("https://www.linkedin.com/in/prathamsharma2")
@@ -908,12 +926,11 @@ class JobApplier:
                         inp.fill("136118")
                     elif any(w in context for w in ["location", "address"]):
                         inp.fill("Haryana, India")
-                    elif any(w in context for w in ["gpa", "percentage", "cgpa"]):
+                    elif any(w in context for w in ["gpa", "percentage", "cgpa", "grade", "marks"]):
                         inp.fill("8.5")
-                    elif any(w in context for w in ["yes", "no", "comfortable", "authorized", "commute", "willing", "eligible"]):
+                    elif any(w in context for w in ["yes", "no", "comfortable", "authorized", "commute", "willing", "eligible", "relocate", "hybrid", "onsite"]):
                         inp.fill("Yes")
                     else:
-                        is_num = (inp.get_attribute("type") or "").lower() == "number" or "number" in (inp.get_attribute("inputmode") or "")
                         inp.fill("2" if is_num else "Yes")
                 except:
                     pass
@@ -929,22 +946,31 @@ class JobApplier:
                 except:
                     pass
 
-            # --- 7. Radio Buttons (Context-Aware Answering) ---
-            radio_groups = page.query_selector_all("fieldset, div[role='radiogroup']")
-            for group in radio_groups:
+            # --- 7. Radio Buttons (Context-Aware Answering for ALL radio groups) ---
+            all_radios = page.query_selector_all("input[type='radio']")
+            seen_radio_names = set()
+            for r in all_radios:
                 try:
-                    # Check if already answered in this group
-                    checked = group.query_selector("input[type='radio']:checked")
-                    if checked:
+                    r_name = r.get_attribute("name") or ""
+                    if not r_name or r_name in seen_radio_names:
+                        continue
+                    seen_radio_names.add(r_name)
+
+                    group = [rad for rad in all_radios if rad.get_attribute("name") == r_name]
+                    if any(rad.is_checked() for rad in group):
                         continue
 
-                    group_text = group.inner_text().lower()
+                    parent_text = ""
+                    try:
+                        p = r.query_selector("xpath=ancestor::div[contains(@class, 'fb-dash-form-element') or contains(@class, 'jobs-easy-apply-form-section')] | ancestor::fieldset")
+                        if p:
+                            parent_text = p.inner_text().lower()
+                    except:
+                        pass
 
                     # Sponsorship / Visa question -> Answer "No"
-                    if any(w in group_text for w in ["sponsor", "visa", "immigration"]):
-                        no_radio = group.query_selector(
-                            "input[type='radio'][value='No'], label:has-text('No') input[type='radio'], input[type='radio'][aria-label*='No']"
-                        )
+                    if any(w in parent_text for w in ["sponsor", "visa", "immigration"]):
+                        no_radio = next((rad for rad in group if (rad.get_attribute("value") or "").lower() == "no"), None)
                         if no_radio:
                             try:
                                 no_radio.check(force=True)
@@ -953,22 +979,17 @@ class JobApplier:
                             continue
 
                     # Disability / Veteran / Demographic question -> Answer "Decline" or "No"
-                    if any(w in group_text for w in ["disability", "veteran", "gender", "race", "ethnicity"]):
-                        decline_radio = group.query_selector(
-                            "input[type='radio'][value*='Decline'], label:has-text('Decline') input[type='radio'], "
-                            "label:has-text('wish') input[type='radio'], label:has-text('No') input[type='radio']"
-                        )
-                        if decline_radio:
+                    if any(w in parent_text for w in ["disability", "veteran", "gender", "race", "ethnicity"]):
+                        dec_radio = next((rad for rad in group if any(d in (rad.get_attribute("value") or "").lower() for d in ["decline", "wish", "no"])), None)
+                        if dec_radio:
                             try:
-                                decline_radio.check(force=True)
+                                dec_radio.check(force=True)
                             except:
-                                decline_radio.click(force=True)
+                                dec_radio.click(force=True)
                             continue
 
-                    # Qualification / Willingness question -> Answer "Yes"
-                    yes_radio = group.query_selector(
-                        "input[type='radio'][value='Yes'], label:has-text('Yes') input[type='radio'], input[type='radio'][aria-label*='Yes']"
-                    )
+                    # Qualification / Willingness / Authorization question -> Answer "Yes"
+                    yes_radio = next((rad for rad in group if (rad.get_attribute("value") or "").lower() == "yes"), None)
                     if yes_radio:
                         try:
                             yes_radio.check(force=True)
@@ -977,17 +998,11 @@ class JobApplier:
                         continue
 
                     # Default fallback: check first available radio option
-                    radios = group.query_selector_all("input[type='radio']")
-                    for r in radios:
+                    if group:
                         try:
-                            r.check(force=True)
-                            break
+                            group[0].check(force=True)
                         except:
-                            try:
-                                r.click(force=True)
-                                break
-                            except:
-                                pass
+                            group[0].click(force=True)
                 except:
                     pass
 
