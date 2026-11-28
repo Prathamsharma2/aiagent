@@ -88,26 +88,77 @@ class JobApplier:
         """Save a debug screenshot."""
         pass
 
+    def _close_messaging_overlays(self):
+        """Minimizes or closes LinkedIn messaging popup bubbles if they obstruct buttons."""
+        try:
+            close_btns = self.page.locator(
+                "button[data-control-name='overlay.close_conversation_window'], "
+                "button.msg-overlay-bubble-header__control--close, "
+                ".msg-overlay-bubble-header__button[aria-label*='Close']"
+            ).all()
+            for btn in close_btns:
+                if btn.is_visible(timeout=200):
+                    btn.click()
+        except:
+            pass
+
     def _dismiss_modal(self):
         """Cleanly dismiss an open Easy Apply modal and confirm discard."""
         try:
-            dismiss_btn = self.page.locator(
-                "button[aria-label*='Dismiss'], button[data-test-modal-close-btn], button.artdeco-modal__dismiss"
-            ).first
-            if dismiss_btn.is_visible(timeout=800):
-                dismiss_btn.click()
-                time.sleep(1)
-                discard_btn = self.page.locator(
-                    "button:has-text('Discard'), [data-test-dialog-primary-btn]"
-                ).first
-                if discard_btn.is_visible(timeout=800):
-                    discard_btn.click()
-                time.sleep(1)
+            for dismiss_sel in [
+                "button[aria-label*='Dismiss']",
+                "button[data-test-modal-close-btn]",
+                "button.artdeco-modal__dismiss",
+                "button[aria-label*='Close']"
+            ]:
+                btn = self.page.locator(dismiss_sel).first
+                if btn.is_visible(timeout=500):
+                    btn.click()
+                    time.sleep(1)
+                    break
+
+            # Confirm discard if prompt appears
+            for discard_sel in [
+                "button:has-text('Discard')",
+                "[data-test-dialog-primary-btn]",
+                "button[data-control-name='discard_application_confirm_btn']",
+                ".artdeco-modal__confirm-dialog-btn"
+            ]:
+                btn = self.page.locator(discard_sel).first
+                if btn.is_visible(timeout=500):
+                    btn.click()
+                    time.sleep(1)
+                    break
         except Exception as e:
             print(f"  ⚠️ Error dismissing modal: {e}")
 
+    def _smart_handle_validation_errors(self, page, user_data):
+        """Finds fields that have validation error classes or missing inputs and auto-fills them."""
+        try:
+            error_elements = page.query_selector_all(".artdeco-inline-feedback--error, [data-test-form-builder-error]")
+            for err in error_elements:
+                parent = err.query_selector("xpath=..")
+                if not parent:
+                    continue
+                inps = parent.query_selector_all("input, select, textarea")
+                for inp in inps:
+                    t = inp.get_attribute("type") or ""
+                    if t in ["text", "number"]:
+                        inp.fill("2")
+                    elif t == "radio":
+                        inp.check()
+                    elif inp.evaluate("el => el.tagName.toLowerCase()") == "select":
+                        opts = inp.query_selector_all("option")
+                        if len(opts) > 1:
+                            inp.select_option(index=1)
+        except Exception as e:
+            print(f"  ⚠️ Error recovery attempt: {e}")
+
     def _fill_and_submit_modal(self, resume_path, user_data):
-        """Fills through the multi-step form and clicks submit."""
+        """
+        Fills through the multi-step form and clicks submit.
+        Includes anti-freeze guard: detects if stuck on the same step and auto-recovers.
+        """
         modal_appeared = False
         for _ in range(8):
             for modal_sel in [
@@ -134,10 +185,39 @@ class JobApplier:
         if not modal_appeared:
             return False
 
-        for step in range(12):
+        previous_dialog_text = ""
+        stuck_step_count = 0
+
+        for step in range(15):
+            self._close_messaging_overlays()
             time.sleep(0.5)
+
+            # Check if modal is still active
+            dialog = self.page.locator("div[role='dialog'], .jobs-easy-apply-modal").first
+            if not dialog.is_visible():
+                break
+
+            current_text = ""
+            try:
+                current_text = dialog.inner_text()[:300]
+            except:
+                pass
+
+            # Anti-freeze check: did the step advance after clicking Next?
+            if current_text and current_text == previous_dialog_text:
+                stuck_step_count += 1
+                print(f"  ⚠️ Step did not advance (stuck check {stuck_step_count}/3)... applying self-healing...")
+                self._smart_handle_validation_errors(self.page, user_data)
+                if stuck_step_count >= 3:
+                    print("  🧠 Smart Decision: Form requires complex manual input. Discarding cleanly to keep hunt moving!")
+                    return False
+            else:
+                stuck_step_count = 0
+                previous_dialog_text = current_text
+
+            # Fill all fields on current step
             self._fill_all_fields(self.page, user_data, resume_path)
-            time.sleep(0.5)
+            time.sleep(0.8)
 
             # 1. Submit application (final step)
             if self._click_if_visible([
@@ -172,6 +252,8 @@ class JobApplier:
                 time.sleep(1)
                 continue
             else:
+                if self._click_if_visible(["button:has-text('Done')"]):
+                    return True
                 return False
 
         return False
@@ -343,45 +425,52 @@ class JobApplier:
         return False
 
     def _fill_all_fields(self, page, user_data, resume_path):
-        """Fill every field type LinkedIn might ask in Easy Apply forms."""
+        """
+        Intelligently fills every field type in LinkedIn Easy Apply forms:
+        - Text & Number fields with contextual heuristics (experience, salary, notice, urls)
+        - Radio buttons with smart question understanding (visa/sponsorship -> No, qualifications -> Yes)
+        - Checkboxes (terms, agreements, data privacy)
+        - Native and custom dropdowns / comboboxes
+        - Resume file upload & pre-uploaded resume selection
+        """
         if not user_data:
             return
         try:
-            # --- Phone ---
+            # --- 1. Phone ---
             for sel in ["input[id*='phoneNumber']", "input[type='tel']", "input[name*='phone']"]:
                 if page.is_visible(sel, timeout=50):
                     current = page.input_value(sel)
                     if not current.strip():
-                        page.fill(sel, user_data.get("phone", ""))
+                        page.fill(sel, user_data.get("phone", "+91 7988105180"))
                     break
 
-            # --- First Name ---
+            # --- 2. First Name ---
             for sel in ["input[id*='firstName']", "input[name*='firstName']"]:
                 if page.is_visible(sel, timeout=50):
                     current = page.input_value(sel)
                     if not current.strip():
-                        name_parts = user_data.get("name", "").split()
-                        page.fill(sel, name_parts[0] if name_parts else "")
+                        name_parts = user_data.get("name", "Pratham Sharma").split()
+                        page.fill(sel, name_parts[0])
                     break
 
-            # --- Last Name ---
+            # --- 3. Last Name ---
             for sel in ["input[id*='lastName']", "input[name*='lastName']"]:
                 if page.is_visible(sel, timeout=50):
                     current = page.input_value(sel)
                     if not current.strip():
-                        name_parts = user_data.get("name", "").split()
+                        name_parts = user_data.get("name", "Pratham Sharma").split()
                         page.fill(sel, name_parts[-1] if len(name_parts) > 1 else "")
                     break
 
-            # --- Email ---
+            # --- 4. Email ---
             for sel in ["input[id*='email']", "input[type='email']", "input[name*='email']"]:
                 if page.is_visible(sel, timeout=50):
                     current = page.input_value(sel)
                     if not current.strip():
-                        page.fill(sel, user_data.get("email", ""))
+                        page.fill(sel, user_data.get("email", "kkrpratham33@gmail.com"))
                     break
 
-            # --- Text/Number inputs (e.g. years of experience, salary) ---
+            # --- 5. Text / Number Inputs (Years of experience, salary, URLs, etc.) ---
             text_inputs = page.query_selector_all("input[type='text']:not([readonly]), input[type='number']:not([readonly])")
             for inp in text_inputs:
                 try:
@@ -390,55 +479,113 @@ class JobApplier:
                     val = inp.input_value() or ""
                     if val.strip():
                         continue  # Already filled
-                    # Get label text for context
+
+                    # Contextual label analysis
                     label_text = ""
                     inp_id = inp.get_attribute("id") or ""
                     if inp_id:
                         label = page.query_selector(f"label[for='{inp_id}']")
                         if label:
                             label_text = label.inner_text().lower()
-                    if any(w in label_text for w in ["year", "experience", "exp"]):
+
+                    aria_label = (inp.get_attribute("aria-label") or "").lower()
+                    placeholder = (inp.get_attribute("placeholder") or "").lower()
+                    context = f"{label_text} {aria_label} {placeholder}"
+
+                    if any(w in context for w in ["year", "experience", "exp"]):
                         inp.fill("2")
-                    elif any(w in label_text for w in ["salary", "ctc", "lpa", "package"]):
-                        inp.fill("500000")
-                    elif any(w in label_text for w in ["notice", "period"]):
+                    elif any(w in context for w in ["salary", "ctc", "lpa", "package", "compensation"]):
+                        inp.fill("600000")
+                    elif any(w in context for w in ["notice", "period"]):
                         inp.fill("30")
+                    elif any(w in context for w in ["linkedin", "profile"]):
+                        inp.fill("https://www.linkedin.com/in/prathamsharma2")
+                    elif any(w in context for w in ["github", "git"]):
+                        inp.fill("https://github.com/Prathamsharma2")
+                    elif any(w in context for w in ["website", "portfolio", "url"]):
+                        inp.fill("https://github.com/Prathamsharma2")
+                    elif any(w in context for w in ["city", "location", "address"]):
+                        inp.fill("Haryana, India")
+                    elif any(w in context for w in ["gpa", "percentage", "cgpa"]):
+                        inp.fill("8.5")
                     else:
                         inp.fill("2")
                 except:
                     pass
 
-            # --- Textarea (cover letter / additional info) ---
+            # --- 6. Textarea (Cover Letter / Additional Questions) ---
             textareas = page.query_selector_all("textarea")
             for ta in textareas:
                 try:
                     if ta.is_visible():
                         val = ta.input_value() or ""
                         if not val.strip():
-                            ta.fill(user_data.get("cover_letter", "I am excited to apply for this role."))
+                            ta.fill(user_data.get("cover_letter", "I am excited to apply for this role and look forward to contributing."))
                 except:
                     pass
 
-            # --- Radio buttons: select "Yes" option or first option ---
-            radio_groups = page.query_selector_all("fieldset")
+            # --- 7. Radio Buttons (Context-Aware Answering) ---
+            radio_groups = page.query_selector_all("fieldset, div[role='radiogroup']")
             for group in radio_groups:
                 try:
-                    # Try to find a "Yes" radio
-                    yes_radio = group.query_selector("input[type='radio'][value='Yes'], label:has-text('Yes') input[type='radio']")
-                    if yes_radio and yes_radio.is_visible():
-                        if not yes_radio.is_checked():
-                            yes_radio.check()
+                    # Check if already answered in this group
+                    checked = group.query_selector("input[type='radio']:checked")
+                    if checked:
                         continue
-                    # Otherwise check first radio in group
+
+                    group_text = group.inner_text().lower()
+
+                    # Sponsorship / Visa question -> Answer "No"
+                    if any(w in group_text for w in ["sponsor", "visa", "immigration"]):
+                        no_radio = group.query_selector(
+                            "input[type='radio'][value='No'], label:has-text('No') input[type='radio'], input[type='radio'][aria-label*='No']"
+                        )
+                        if no_radio and no_radio.is_visible():
+                            no_radio.check()
+                            continue
+
+                    # Disability / Veteran / Demographic question -> Answer "Decline" or "No"
+                    if any(w in group_text for w in ["disability", "veteran", "gender", "race", "ethnicity"]):
+                        decline_radio = group.query_selector(
+                            "input[type='radio'][value*='Decline'], label:has-text('Decline') input[type='radio'], "
+                            "label:has-text('wish') input[type='radio'], label:has-text('No') input[type='radio']"
+                        )
+                        if decline_radio and decline_radio.is_visible():
+                            decline_radio.check()
+                            continue
+
+                    # Qualification / Willingness question -> Answer "Yes"
+                    yes_radio = group.query_selector(
+                        "input[type='radio'][value='Yes'], label:has-text('Yes') input[type='radio'], input[type='radio'][aria-label*='Yes']"
+                    )
+                    if yes_radio and yes_radio.is_visible():
+                        yes_radio.check()
+                        continue
+
+                    # Default fallback: check first available radio option
                     radios = group.query_selector_all("input[type='radio']")
-                    for radio in radios:
-                        if radio.is_visible() and not radio.is_checked():
-                            radio.check()
+                    for r in radios:
+                        if r.is_visible():
+                            r.check()
                             break
                 except:
                     pass
 
-            # --- Select dropdowns ---
+            # --- 8. Checkboxes (Terms, Policies, Consents) ---
+            checkboxes = page.query_selector_all("input[type='checkbox']")
+            for chk in checkboxes:
+                try:
+                    if chk.is_visible() and not chk.is_checked():
+                        chk_id = chk.get_attribute("id") or ""
+                        label = page.query_selector(f"label[for='{chk_id}']")
+                        label_text = label.inner_text().lower() if label else ""
+                        # Auto-check terms, agreement, or consent checkboxes
+                        if any(w in label_text for w in ["agree", "consent", "terms", "policy", "acknowledge", "certify"]):
+                            chk.check()
+                except:
+                    pass
+
+            # --- 9. Dropdowns & Custom Comboboxes ---
             dropdowns = page.query_selector_all("select")
             for dropdown in dropdowns:
                 try:
@@ -454,7 +601,35 @@ class JobApplier:
                 except:
                     pass
 
-            # --- File upload (resume) ---
+            # Custom Artdeco comboboxes
+            comboboxes = page.query_selector_all("div[role='combobox'], input[role='combobox']")
+            for combo in comboboxes:
+                try:
+                    if combo.is_visible():
+                        val = combo.input_value() if hasattr(combo, 'input_value') else ""
+                        if not val.strip():
+                            combo.click()
+                            time.sleep(0.4)
+                            first_opt = page.query_selector("div[role='option'], li[role='option']")
+                            if first_opt and first_opt.is_visible():
+                                first_opt.click()
+                except:
+                    pass
+
+            # --- 10. Resume Selection or File Upload ---
+            # If previous resumes are shown as radio cards, select the first one
+            resume_cards = page.query_selector_all("div.jobs-document-upload__title, [data-test-document-card]")
+            if resume_cards:
+                for card in resume_cards:
+                    try:
+                        radio = card.query_selector("input[type='radio']")
+                        if radio and not radio.is_checked():
+                            radio.check()
+                            break
+                    except:
+                        pass
+
+            # If file input is present and file upload is required
             file_inputs = page.query_selector_all("input[type='file']")
             for file_input in file_inputs:
                 try:
