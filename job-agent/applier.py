@@ -21,6 +21,7 @@ class JobApplier:
         os.makedirs(self.data_dir, exist_ok=True)
         self.applied_file = os.path.join(self.data_dir, "applied_job_ids.json")
         self.applied_ids = self._load_applied_ids()
+        self.session_skipped_ids = set()
 
     def _load_applied_ids(self):
         """Loads previously applied job IDs from local disk."""
@@ -107,17 +108,24 @@ class JobApplier:
     def _dismiss_modal(self):
         """Cleanly dismiss an open Easy Apply modal and confirm discard."""
         try:
+            dismissed = False
             for dismiss_sel in [
                 "button[aria-label*='Dismiss']",
                 "button[data-test-modal-close-btn]",
                 "button.artdeco-modal__dismiss",
-                "button[aria-label*='Close']"
+                "button[aria-label*='Close']",
+                "button[aria-label*='Cancel']"
             ]:
                 btn = self.page.locator(dismiss_sel).first
-                if btn.is_visible(timeout=500):
+                if btn.is_visible(timeout=400):
                     btn.click()
-                    time.sleep(1)
+                    dismissed = True
+                    time.sleep(0.8)
                     break
+
+            if not dismissed:
+                self.page.keyboard.press("Escape")
+                time.sleep(0.5)
 
             # Confirm discard if prompt appears
             for discard_sel in [
@@ -129,7 +137,7 @@ class JobApplier:
                 btn = self.page.locator(discard_sel).first
                 if btn.is_visible(timeout=500):
                     btn.click()
-                    time.sleep(1)
+                    time.sleep(0.8)
                     break
         except Exception as e:
             print(f"  ⚠️ Error dismissing modal: {e}")
@@ -137,22 +145,74 @@ class JobApplier:
     def _smart_handle_validation_errors(self, page, user_data):
         """Finds fields that have validation error classes or missing inputs and auto-fills them."""
         try:
+            # 1. Elements marked invalid with aria-invalid="true"
+            for inp in page.query_selector_all("[aria-invalid='true']"):
+                try:
+                    tag = inp.evaluate("el => el.tagName.toLowerCase()")
+                    t = (inp.get_attribute("type") or "").lower()
+                    if tag == "textarea":
+                        inp.fill("Yes, I have relevant experience.")
+                    elif t in ["text", "number"]:
+                        inp.fill("2")
+                    elif t in ["radio", "checkbox"]:
+                        inp.check(force=True)
+                except:
+                    pass
+
+            # 2. LinkedIn inline feedback error messages
             error_elements = page.query_selector_all(".artdeco-inline-feedback--error, [data-test-form-builder-error]")
             for err in error_elements:
-                parent = err.query_selector("xpath=..")
-                if not parent:
-                    continue
-                inps = parent.query_selector_all("input, select, textarea")
-                for inp in inps:
-                    t = inp.get_attribute("type") or ""
-                    if t in ["text", "number"]:
-                        inp.fill("2")
-                    elif t == "radio":
-                        inp.check()
-                    elif inp.evaluate("el => el.tagName.toLowerCase()") == "select":
-                        opts = inp.query_selector_all("option")
+                try:
+                    parent = err.query_selector(
+                        "xpath=ancestor::div[contains(@class, 'fb-dash-form-element') or contains(@class, 'jobs-easy-apply-form-section') or contains(@class, 'artdeco-text-input')] | ancestor::fieldset"
+                    ) or err.query_selector("xpath=..")
+                    if not parent:
+                        continue
+                    inps = parent.query_selector_all("input, select, textarea")
+                    for inp in inps:
+                        t = (inp.get_attribute("type") or "").lower()
+                        tag = inp.evaluate("el => el.tagName.toLowerCase()")
+                        if tag == "textarea":
+                            inp.fill("Yes, I have extensive relevant experience.")
+                        elif t in ["text", "number"]:
+                            inp.fill("2")
+                        elif t in ["radio", "checkbox"]:
+                            inp.check(force=True)
+                        elif tag == "select":
+                            opts = inp.query_selector_all("option")
+                            if len(opts) > 1:
+                                inp.select_option(index=1)
+                except:
+                    pass
+
+            # 3. Unchecked required radio fieldset
+            for fieldset in page.query_selector_all("fieldset"):
+                try:
+                    checked = fieldset.query_selector("input[type='radio']:checked")
+                    if not checked:
+                        radios = fieldset.query_selector_all("input[type='radio']")
+                        for r in radios:
+                            val = (r.get_attribute("value") or "").lower()
+                            if val == "yes":
+                                r.check(force=True)
+                                break
+                        else:
+                            if radios:
+                                radios[0].check(force=True)
+                except:
+                    pass
+
+            # 4. Unselected select dropdowns
+            for sel in page.query_selector_all("select"):
+                try:
+                    val = sel.input_value()
+                    if not val or val == "Select an option" or val == "":
+                        opts = sel.query_selector_all("option")
                         if len(opts) > 1:
-                            inp.select_option(index=1)
+                            sel.select_option(index=1)
+                except:
+                    pass
+
         except Exception as e:
             print(f"  ⚠️ Error recovery attempt: {e}")
 
@@ -162,20 +222,24 @@ class JobApplier:
         Includes anti-freeze guard: detects if stuck on the same step and auto-recovers.
         """
         modal_appeared = False
-        for _ in range(8):
+        for _ in range(10):
             for modal_sel in [
                 ".jobs-easy-apply-content",
                 ".jobs-easy-apply-modal",
                 "[data-test-modal]",
                 ".artdeco-modal__content",
+                ".artdeco-modal",
                 "div[role='dialog']",
-                "button[aria-label='Continue to next step']",
-                "button:has-text('Next')",
-                "button:has-text('Review')",
+                "button[aria-label*='Submit']",
                 "button:has-text('Submit application')",
+                "button[aria-label*='Review']",
+                "button:has-text('Review')",
+                "button[aria-label*='Continue']",
+                "button:has-text('Next')",
+                "footer button",
             ]:
                 try:
-                    if self.page.is_visible(modal_sel, timeout=300):
+                    if self.page.locator(modal_sel).first.is_visible(timeout=250):
                         modal_appeared = True
                         break
                 except:
@@ -194,16 +258,64 @@ class JobApplier:
             self._close_messaging_overlays()
             time.sleep(0.5)
 
-            # Check if modal is still active
-            dialog = self.page.locator("div[role='dialog'], .jobs-easy-apply-modal").first
-            if not dialog.is_visible():
+            # Check if form/modal is still active
+            form_active = False
+            for active_sel in [
+                "button[aria-label*='Submit']",
+                "button:has-text('Submit application')",
+                "button:has-text('Submit')",
+                "button[aria-label*='Review']",
+                "button:has-text('Review')",
+                "button[aria-label*='Continue']",
+                "button[aria-label*='Next']",
+                "button:has-text('Next')",
+                "button:has-text('Done')",
+                ".jobs-easy-apply-content",
+                ".jobs-easy-apply-modal",
+                "div[role='dialog']",
+                "[data-test-modal]",
+                ".artdeco-modal",
+                "footer button.artdeco-button--primary",
+                ".jobs-easy-apply-footer",
+                "div.jobs-apply-form"
+            ]:
+                try:
+                    if self.page.locator(active_sel).first.is_visible(timeout=150):
+                        form_active = True
+                        break
+                except:
+                    pass
+
+            if not form_active:
+                if self._click_if_visible(["button:has-text('Done')", "button[aria-label*='Done']"]):
+                    return True
                 break
 
+            # Extract current step text for anti-freeze check
             current_text = ""
-            try:
-                current_text = dialog.inner_text()[:300]
-            except:
-                pass
+            for c_sel in [
+                ".jobs-easy-apply-content",
+                "div[role='dialog']",
+                ".jobs-easy-apply-modal",
+                "[data-test-modal]",
+                ".artdeco-modal",
+                ".scaffold-layout__main",
+                "form"
+            ]:
+                try:
+                    c = self.page.locator(c_sel).first
+                    if c.is_visible(timeout=100):
+                        t = c.inner_text()[:400]
+                        if t.strip():
+                            current_text = t
+                            break
+                except:
+                    pass
+            if not current_text:
+                try:
+                    current_text = self.page.locator("body").inner_text()[:400]
+                except:
+                    pass
 
             # Anti-freeze check: did the step advance after clicking Next?
             if current_text and current_text == previous_dialog_text:
@@ -226,6 +338,8 @@ class JobApplier:
                 "button[aria-label='Submit application']",
                 "footer button:has-text('Submit application')",
                 "button:has-text('Submit application')",
+                "button[aria-label*='Submit']",
+                "button:has-text('Submit')",
             ], timeout=1500):
                 print("  📊 Status: APPLIED ✅ - Application submitted successfully!")
                 time.sleep(2)
@@ -241,6 +355,7 @@ class JobApplier:
                 "button[aria-label='Review your application']",
                 "footer button:has-text('Review')",
                 "button:has-text('Review')",
+                "button[aria-label*='Review']",
             ], timeout=1000):
                 time.sleep(1)
                 continue
@@ -250,13 +365,34 @@ class JobApplier:
                 "button[aria-label='Continue to next step']",
                 "footer button:has-text('Next')",
                 "button:has-text('Next')",
+                "button[aria-label*='Next']",
+                "button[aria-label*='Continue']",
+                "footer button.artdeco-button--primary",
+                ".jobs-easy-apply-footer button.artdeco-button--primary",
             ], timeout=1000):
                 time.sleep(1)
                 continue
+
+            # 4. Check for 'Done'
+            elif self._click_if_visible([
+                "button:has-text('Done')",
+                "button[aria-label*='Done']"
+            ], timeout=600):
+                print("  📊 Status: APPLIED ✅ - Application completed ('Done' clicked)!")
+                return True
+
+            # 5. Fallback: try clicking any primary button
+            elif self._click_if_visible([
+                "button.artdeco-button--primary",
+                "button[type='submit']"
+            ], timeout=800):
+                time.sleep(1)
+                continue
+
             else:
-                if self._click_if_visible(["button:has-text('Done')"]):
-                    return True
-                return False
+                # If no button found, attempt error recovery once
+                self._smart_handle_validation_errors(self.page, user_data)
+                time.sleep(0.5)
 
         return False
 
@@ -346,8 +482,8 @@ class JobApplier:
                 jid = m.group(1) if m else "unknown"
 
                 # Check 1: In local applied history?
-                if jid != "unknown" and jid in self.applied_ids:
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already in local applied history. Skipping to next...")
+                if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already applied/handled. Skipping to next...")
                     continue
 
                 # Check 2: Marked 'Applied' on LinkedIn?
@@ -408,12 +544,15 @@ class JobApplier:
                 else:
                     print(f"  ⚠️ Form could not be auto-completed (custom questions). Discarding and moving to next...")
                     self._dismiss_modal()
-                    self.mark_job_applied(jid, title)
+                    if jid != "unknown":
+                        self.session_skipped_ids.add(str(jid))
                     time.sleep(1)
 
             except Exception as e:
                 print(f"  ⚠️ Error processing job '{title}': {e}. Moving to next...")
                 self._dismiss_modal()
+                if jid != "unknown":
+                    self.session_skipped_ids.add(str(jid))
                 continue
 
         return applied_count
@@ -518,8 +657,11 @@ class JobApplier:
                         inp.fill("Haryana, India")
                     elif any(w in context for w in ["gpa", "percentage", "cgpa"]):
                         inp.fill("8.5")
+                    elif any(w in context for w in ["yes", "no", "comfortable", "authorized", "commute", "willing", "eligible"]):
+                        inp.fill("Yes")
                     else:
-                        inp.fill("2")
+                        is_num = (inp.get_attribute("type") or "").lower() == "number" or "number" in (inp.get_attribute("inputmode") or "")
+                        inp.fill("2" if is_num else "Yes")
                 except:
                     pass
 
@@ -550,8 +692,11 @@ class JobApplier:
                         no_radio = group.query_selector(
                             "input[type='radio'][value='No'], label:has-text('No') input[type='radio'], input[type='radio'][aria-label*='No']"
                         )
-                        if no_radio and no_radio.is_visible():
-                            no_radio.check()
+                        if no_radio:
+                            try:
+                                no_radio.check(force=True)
+                            except:
+                                no_radio.click(force=True)
                             continue
 
                     # Disability / Veteran / Demographic question -> Answer "Decline" or "No"
@@ -560,24 +705,36 @@ class JobApplier:
                             "input[type='radio'][value*='Decline'], label:has-text('Decline') input[type='radio'], "
                             "label:has-text('wish') input[type='radio'], label:has-text('No') input[type='radio']"
                         )
-                        if decline_radio and decline_radio.is_visible():
-                            decline_radio.check()
+                        if decline_radio:
+                            try:
+                                decline_radio.check(force=True)
+                            except:
+                                decline_radio.click(force=True)
                             continue
 
                     # Qualification / Willingness question -> Answer "Yes"
                     yes_radio = group.query_selector(
                         "input[type='radio'][value='Yes'], label:has-text('Yes') input[type='radio'], input[type='radio'][aria-label*='Yes']"
                     )
-                    if yes_radio and yes_radio.is_visible():
-                        yes_radio.check()
+                    if yes_radio:
+                        try:
+                            yes_radio.check(force=True)
+                        except:
+                            yes_radio.click(force=True)
                         continue
 
                     # Default fallback: check first available radio option
                     radios = group.query_selector_all("input[type='radio']")
                     for r in radios:
-                        if r.is_visible():
-                            r.check()
+                        try:
+                            r.check(force=True)
                             break
+                        except:
+                            try:
+                                r.click(force=True)
+                                break
+                            except:
+                                pass
                 except:
                     pass
 
@@ -585,13 +742,16 @@ class JobApplier:
             checkboxes = page.query_selector_all("input[type='checkbox']")
             for chk in checkboxes:
                 try:
-                    if chk.is_visible() and not chk.is_checked():
+                    if not chk.is_checked():
                         chk_id = chk.get_attribute("id") or ""
                         label = page.query_selector(f"label[for='{chk_id}']")
                         label_text = label.inner_text().lower() if label else ""
                         # Auto-check terms, agreement, or consent checkboxes
-                        if any(w in label_text for w in ["agree", "consent", "terms", "policy", "acknowledge", "certify"]):
-                            chk.check()
+                        if any(w in label_text for w in ["agree", "consent", "terms", "policy", "acknowledge", "certify", "confirm"]):
+                            try:
+                                chk.check(force=True)
+                            except:
+                                chk.click(force=True)
                 except:
                     pass
 

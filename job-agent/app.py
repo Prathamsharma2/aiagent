@@ -65,7 +65,7 @@ def run_agent():
                 print(f"\n⚡ AUTONOMOUS HUNT: Searching {job['title']}...")
                 new_applied = applier.apply_all_on_search_page(
                     search_url=job['url'],
-                    resume_path=resume_path,
+                    resume_path=default_resume,
                     user_data=user_data,
                     max_apply_per_page=15
                 )
