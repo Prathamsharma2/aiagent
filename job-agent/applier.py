@@ -150,6 +150,25 @@ class JobApplier:
 
             if not still_open:
                 break
+            else:
+                # Direct JavaScript fallback to click 'Not now' or dismiss if still open
+                try:
+                    self.page.evaluate("""() => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        for (const b of btns) {
+                            const txt = (b.innerText || '').trim().toLowerCase();
+                            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                            if (txt === 'not now' || aria.includes('not now') || txt === 'done' || aria.includes('dismiss')) {
+                                b.click();
+                                break;
+                            }
+                        }
+                        const dismiss = document.querySelector('button.artdeco-modal__dismiss, [data-test-modal-close-btn]');
+                        if (dismiss) dismiss.click();
+                    }""")
+                    time.sleep(0.3)
+                except:
+                    pass
 
     def _dismiss_modal(self):
         """Cleanly dismiss an open Easy Apply modal and confirm discard."""
@@ -533,59 +552,114 @@ class JobApplier:
         self._ensure_all_modals_closed()
 
         # Discover all job entries on the page
-        job_titles = []
         dismiss_btns = self.page.locator('button[aria-label*="Dismiss "]').all()
+        job_entries = []
         if dismiss_btns:
             for b in dismiss_btns:
                 aria = b.get_attribute("aria-label") or ""
                 t = aria.replace("Dismiss ", "").replace(" job", "").strip()
-                if t and t not in job_titles:
-                    job_titles.append(t)
+                if t:
+                    job_entries.append({"title": t, "btn": b})
 
-        if not job_titles:
-            # Fallback to finding title links
+        # Fallback if no dismiss buttons found
+        if not job_entries:
             links = self.page.locator('a.job-card-list__title--link, a.job-card-container__link, a[data-control-name="job_card_click"]').all()
             for l in links:
                 try:
                     t = l.inner_text().strip().split('\n')[0].strip()
-                    if t and t not in job_titles:
-                        job_titles.append(t)
+                    if t:
+                        job_entries.append({"title": t, "link": l})
                 except:
                     pass
 
-        print(f"📋 Discovered {len(job_titles)} jobs on this search page.")
+        print(f"📋 Discovered {len(job_entries)} jobs on this search page.")
 
         applied_count = 0
 
-        for idx, title in enumerate(job_titles):
+        for idx, entry in enumerate(job_entries):
             if applied_count >= max_apply_per_page:
                 print(f"🎯 Target of {max_apply_per_page} applications reached on this page.")
                 break
 
+            title = entry.get("title", "Job Role")
             jid = "unknown"
 
             try:
                 # Ensure no stray popup or overlay is blocking clicks
                 self._ensure_all_modals_closed()
 
-                # Find the clickable title/card on screen
-                job_el = self.page.locator(f'text="{title}"').first
-                try:
-                    job_el.scroll_into_view_if_needed(timeout=2000)
-                    time.sleep(0.3)
-                    job_el.click(force=True)
-                except:
+                # Find the EXACT job card element to click
+                btn = entry.get("btn")
+                link = entry.get("link")
+                card = None
+
+                if btn:
                     try:
-                        job_el.click()
+                        card = btn.locator("xpath=ancestor::li[contains(@class, 'jobs-search-results__list-item') or @data-occludable-job-id] | ancestor::div[contains(@class, 'job-card-container')]").first
+                    except:
+                        pass
+                elif link:
+                    try:
+                        card = link.locator("xpath=ancestor::li | ancestor::div[contains(@class, 'job-card-container')]").first
+                    except:
+                        pass
+
+                # Extract Job ID directly from card attribute if possible
+                if card:
+                    try:
+                        jid = card.get_attribute("data-occludable-job-id") or card.get_attribute("data-job-id") or "unknown"
+                    except:
+                        pass
+
+                # Quick pre-check before clicking: Already applied or handled?
+                if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already applied/handled. Skipping...")
+                    continue
+
+                # Scroll the card into view
+                target_to_scroll = card if (card and card.is_visible()) else (btn or link)
+                if target_to_scroll:
+                    try:
+                        target_to_scroll.scroll_into_view_if_needed(timeout=2000)
+                        time.sleep(0.3)
+                    except:
+                        pass
+
+                # Click the job card or its link
+                clicked = False
+                if card:
+                    title_link = card.locator("a.job-card-list__title--link, a.job-card-container__link, a[href*='/jobs/view/']").first
+                    try:
+                        if title_link.is_visible(timeout=500):
+                            title_link.click(force=True)
+                            clicked = True
+                    except:
+                        pass
+
+                if not clicked and link:
+                    try:
+                        link.click(force=True)
+                        clicked = True
+                    except:
+                        pass
+
+                if not clicked:
+                    try:
+                        if card:
+                            card.click(force=True)
+                        else:
+                            scoped_job = self.page.locator(f".jobs-search-results-list text='{title}', .scaffold-layout__list text='{title}'").first
+                            scoped_job.click(force=True)
                     except Exception as e:
                         print(f"  ⏭️ Job #{idx+1}: '{title}' could not be clicked ({e}). Skipping...")
                         continue
 
-                time.sleep(1.5)
+                time.sleep(1.8)
 
-                # Extract Job ID
-                m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
-                jid = m.group(1) if m else "unknown"
+                # Extract Job ID from page URL if unknown
+                if jid == "unknown":
+                    m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
+                    jid = m.group(1) if m else "unknown"
 
                 # Check 1: In local applied history or session skipped?
                 if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
@@ -593,9 +667,9 @@ class JobApplier:
                     continue
 
                 # Check 2: Marked 'Applied' on LinkedIn?
-                applied_btn = self.page.locator('button:has-text("Applied")').first
+                applied_btn = self.page.locator('.jobs-details__top-card button:has-text("Applied"), .jobs-s-apply button:has-text("Applied"), button:has-text("Applied")').first
                 is_applied_btn = applied_btn.is_visible(timeout=250) if applied_btn else False
-                applied_badge = self.page.locator('.jobs-s-apply__applied-badge').first
+                applied_badge = self.page.locator('.jobs-s-apply__applied-badge, .jobs-details__top-card .artdeco-inline-feedback--success').first
                 is_applied_badge = applied_badge.is_visible(timeout=250) if applied_badge else False
 
                 applied_text = False
@@ -611,10 +685,37 @@ class JobApplier:
                         self.mark_job_applied(jid, title)
                     continue
 
-                # Check 3: Is Easy Apply button available?
-                ea_btn = self.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first
-                if not ea_btn.is_visible(timeout=800):
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply. Skipping...")
+                # Check 3: Wait and locate Easy Apply button in the details pane
+                ea_btn = None
+                for _ in range(8):
+                    for sel in [
+                        ".jobs-apply-button--top-card button",
+                        ".jobs-details__top-card button",
+                        ".jobs-s-apply button",
+                        "button.jobs-apply-button",
+                        "div.jobs-apply-button--top-card button",
+                        ".jobs-details__top-card button:has-text('Easy Apply')",
+                        "button[aria-label*='Easy Apply to']",
+                        "button:has-text('Easy Apply'):not(#searchFilter_f_AL):not([aria-label*='filter'])"
+                    ]:
+                        try:
+                            loc = self.page.locator(sel).first
+                            if loc.is_visible(timeout=300):
+                                b_id = loc.get_attribute("id") or ""
+                                b_aria = (loc.get_attribute("aria-label") or "").lower()
+                                b_txt = (loc.inner_text() or "").lower()
+                                if "searchfilter" not in b_id.lower() and "filter" not in b_aria:
+                                    if "easy apply" in b_txt or "easy apply" in b_aria:
+                                        ea_btn = loc
+                                        break
+                        except:
+                            pass
+                    if ea_btn:
+                        break
+                    time.sleep(0.4)
+
+                if not ea_btn:
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply in details pane. Skipping...")
                     continue
 
                 # Extract real company name and job description from the page
@@ -638,7 +739,11 @@ class JobApplier:
 
                 # Click Easy Apply and start filling
                 print(f"  ⚡ Job #{idx+1}: '{title}' (ID: {jid}) - Starting Easy Apply...")
-                ea_btn.click()
+                try:
+                    ea_btn.scroll_into_view_if_needed(timeout=1000)
+                    ea_btn.click(timeout=2000)
+                except:
+                    ea_btn.click(force=True)
                 time.sleep(1)
 
                 submitted = self._fill_and_submit_modal(active_resume_path, job_user_data)
@@ -677,7 +782,10 @@ class JobApplier:
             try:
                 locator = self.page.locator(sel).first
                 if locator.is_visible(timeout=timeout):
-                    locator.click()
+                    try:
+                        locator.click(timeout=1500, force=True)
+                    except:
+                        locator.dispatch_event("click")
                     return True
             except:
                 pass
