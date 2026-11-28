@@ -2,6 +2,8 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 import time
 import os
+import re
+import json
 
 class JobApplier:
     def __init__(self, use_tor=False):
@@ -9,6 +11,34 @@ class JobApplier:
         self.playwright = None
         self.browser_context = None
         self.page = None
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.data_dir = os.path.join(script_dir, "data")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.applied_file = os.path.join(self.data_dir, "applied_job_ids.json")
+        self.applied_ids = self._load_applied_ids()
+
+    def _load_applied_ids(self):
+        """Loads previously applied job IDs from local disk."""
+        if os.path.exists(self.applied_file):
+            try:
+                with open(self.applied_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return set(data) if isinstance(data, list) else set(data.keys())
+            except Exception as e:
+                print(f"⚠️ Error loading applied jobs file: {e}")
+        return set()
+
+    def mark_job_applied(self, job_id, job_title=""):
+        """Saves a job ID to the persistent applied jobs file so it is never re-attempted."""
+        if not job_id or job_id == "unknown":
+            return
+        self.applied_ids.add(str(job_id))
+        try:
+            with open(self.applied_file, "w", encoding="utf-8") as f:
+                json.dump(sorted(list(self.applied_ids)), f, indent=2)
+        except Exception as e:
+            print(f"⚠️ Error saving applied job id: {e}")
 
     def start_session(self):
         """Starts a persistent browser session and keeps it open."""
@@ -18,8 +48,7 @@ class JobApplier:
         if not self.playwright:
             self.playwright = sync_playwright().start()
         
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        session_dir = os.path.join(script_dir, "data/browser_session")
+        session_dir = os.path.join(self.data_dir, "browser_session")
         
         browser_args = ["--disable-blink-features=AutomationControlled"]
         if self.use_tor:
@@ -57,193 +86,201 @@ class JobApplier:
         """Save a debug screenshot."""
         pass
 
-    def apply_to_job(self, job_url, resume_path, user_data=None):
-        """Autonomous Easy Apply flow."""
-        if not self.browser_context:
-            self.start_session()
-
-        print(f"🚀 Navigating to: {job_url}")
+    def _dismiss_modal(self):
+        """Cleanly dismiss an open Easy Apply modal and confirm discard."""
         try:
-            self.page.goto(job_url, timeout=45000, wait_until="domcontentloaded")
-            time.sleep(3)
+            dismiss_btn = self.page.locator(
+                "button[aria-label*='Dismiss'], button[data-test-modal-close-btn], button.artdeco-modal__dismiss"
+            ).first
+            if dismiss_btn.is_visible(timeout=800):
+                dismiss_btn.click()
+                time.sleep(1)
+                discard_btn = self.page.locator(
+                    "button:has-text('Discard'), [data-test-dialog-primary-btn]"
+                ).first
+                if discard_btn.is_visible(timeout=800):
+                    discard_btn.click()
+                time.sleep(1)
         except Exception as e:
-            print(f"📊 Status: FAILED (Navigation Error: {e})")
-            return False
+            print(f"  ⚠️ Error dismissing modal: {e}")
 
-        self._screenshot("after_navigate")
-
-        try:
-            easy_apply_selectors = [
-                ".jobs-apply-button--top-card",
-                ".jobs-s-apply button",
-                "button.jobs-apply-button",
-                "button:has-text('Easy Apply')",
-                "button:has-text('Apply now')",
-                "button[aria-label*='Easy Apply']",
-            ]
-
-            applied_clicked = False
-
-            # 1. First check if Easy Apply button is already directly visible on this page
-            for sel in easy_apply_selectors:
+    def _fill_and_submit_modal(self, resume_path, user_data):
+        """Fills through the multi-step form and clicks submit."""
+        modal_appeared = False
+        for _ in range(8):
+            for modal_sel in [
+                ".jobs-easy-apply-content",
+                ".jobs-easy-apply-modal",
+                "[data-test-modal]",
+                ".artdeco-modal__content",
+                "div[role='dialog']",
+                "button[aria-label='Continue to next step']",
+                "button:has-text('Next')",
+                "button:has-text('Review')",
+                "button:has-text('Submit application')",
+            ]:
                 try:
-                    btn = self.page.locator(sel).first
-                    if btn.is_visible(timeout=800):
-                        btn.click()
-                        print(f"✅ Clicked Easy Apply directly on page ({sel})!")
-                        applied_clicked = True
-                        time.sleep(1.5)
+                    if self.page.is_visible(modal_sel, timeout=300):
+                        modal_appeared = True
                         break
                 except:
                     pass
+            if modal_appeared:
+                break
+            time.sleep(0.5)
 
-            # 2. If not directly visible, search for job card elements to click
-            if not applied_clicked:
-                job_selectors = [
-                    "a[href*='/jobs/view/']",
-                    ".job-card-container",
-                    "li.jobs-search-results__list-item",
-                    "li.jobs-search-results-list__list-item",
-                    "[data-occludable-job-id]",
-                    "div[data-job-id]",
-                    "li[data-view-name]",
-                    ".jobs-search__results-list li",
-                ]
+        if not modal_appeared:
+            return False
 
-                job_cards = []
-                for sel in job_selectors:
-                    elements = self.page.locator(sel).all()
-                    if elements:
-                        job_cards = elements
+        for step in range(12):
+            time.sleep(0.5)
+            self._fill_all_fields(self.page, user_data, resume_path)
+            time.sleep(0.5)
+
+            # 1. Submit application (final step)
+            if self._click_if_visible([
+                "button[aria-label='Submit application']",
+                "footer button:has-text('Submit application')",
+                "button:has-text('Submit application')",
+            ], timeout=1500):
+                print("  📊 Status: APPLIED ✅ - Application submitted successfully!")
+                time.sleep(2)
+                self._click_if_visible([
+                    "button:has-text('Done')",
+                    "button[aria-label='Dismiss']",
+                    "button.artdeco-modal__dismiss",
+                ], timeout=1500)
+                return True
+
+            # 2. Review
+            elif self._click_if_visible([
+                "button[aria-label='Review your application']",
+                "footer button:has-text('Review')",
+                "button:has-text('Review')",
+            ], timeout=1000):
+                time.sleep(1)
+                continue
+
+            # 3. Next step
+            elif self._click_if_visible([
+                "button[aria-label='Continue to next step']",
+                "footer button:has-text('Next')",
+                "button:has-text('Next')",
+            ], timeout=1000):
+                time.sleep(1)
+                continue
+            else:
+                return False
+
+        return False
+
+    def apply_all_on_search_page(self, search_url, resume_path, user_data=None, max_apply_per_page=10):
+        """
+        Navigates to search results and iterates through all job cards.
+        If a job is already applied, it skips immediately to the next job.
+        Returns the number of successfully submitted applications.
+        """
+        if not self.browser_context:
+            self.start_session()
+
+        print(f"🚀 Navigating to: {search_url}")
+        try:
+            self.page.goto(search_url, timeout=45000, wait_until="domcontentloaded")
+            time.sleep(4)
+        except Exception as e:
+            print(f"📊 Status: FAILED (Navigation Error: {e})")
+            return 0
+
+        # Discover all job entries on the page
+        dismiss_btns = self.page.locator('button[aria-label*="Dismiss "]').all()
+        job_titles = []
+        if dismiss_btns:
+            for b in dismiss_btns:
+                aria = b.get_attribute("aria-label") or ""
+                t = aria.replace("Dismiss ", "").replace(" job", "").strip()
+                if t and t not in job_titles:
+                    job_titles.append(t)
+
+        print(f"📋 Discovered {len(job_titles)} jobs on this search page.")
+
+        applied_count = 0
+
+        for idx, title in enumerate(job_titles):
+            if applied_count >= max_apply_per_page:
+                print(f"🎯 Target of {max_apply_per_page} applications reached on this page.")
+                break
+
+            try:
+                # Find the clickable title/card on screen
+                job_el = self.page.locator(f'text="{title}"').first
+                if not job_el.is_visible(timeout=1000):
+                    continue
+
+                job_el.scroll_into_view_if_needed()
+                job_el.click()
+                time.sleep(1.5)
+
+                # Extract Job ID
+                m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
+                jid = m.group(1) if m else "unknown"
+
+                # Check 1: In local applied history?
+                if jid != "unknown" and jid in self.applied_ids:
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already in local applied history. Skipping to next...")
+                    continue
+
+                # Check 2: Marked 'Applied' on LinkedIn?
+                applied_btn = self.page.locator('button:has-text("Applied")').first
+                is_applied_btn = applied_btn.is_visible(timeout=300) if applied_btn else False
+                applied_badge = self.page.locator('.jobs-s-apply__applied-badge').first
+                is_applied_badge = applied_badge.is_visible(timeout=300) if applied_badge else False
+
+                applied_text = False
+                top_actions = self.page.locator('.jobs-apply-button--top-card, .jobs-s-apply, .jobs-details__top-card').all()
+                for ta in top_actions:
+                    if 'applied' in ta.inner_text().lower():
+                        applied_text = True
                         break
 
-                print(f"📋 Found {len(job_cards)} job elements on page.")
-
-                for idx, card in enumerate(job_cards[:10]):
-                    try:
-                        card.scroll_into_view_if_needed()
-                        card.click()
-                        time.sleep(1.5)
-
-                        for sel in easy_apply_selectors:
-                            btn = self.page.locator(sel).first
-                            if btn.is_visible(timeout=800):
-                                btn.click()
-                                print(f"✅ Clicked Easy Apply on job #{idx+1}!")
-                                applied_clicked = True
-                                time.sleep(1.5)
-                                break
-
-                        if applied_clicked:
-                            break
-                        else:
-                            print(f"  ⏭️ Job #{idx+1} does not have Easy Apply. Checking next...")
-                    except Exception as e:
-                        continue
-
-            if not applied_clicked:
-                self._screenshot("no_easy_apply_found")
-                print("📊 Status: SKIPPED (No valid Easy Apply button found on this page)")
-                return False
-
-            # --- Handle the Easy Apply MODAL / FORM ---
-            modal_appeared = False
-            for _ in range(8):
-                for modal_sel in [
-                    ".jobs-easy-apply-content",
-                    ".jobs-easy-apply-modal",
-                    "[data-test-modal]",
-                    ".artdeco-modal__content",
-                    "div[role='dialog']",
-                    "button[aria-label='Continue to next step']",
-                    "button:has-text('Next')",
-                    "button:has-text('Review')",
-                    "button:has-text('Submit application')",
-                ]:
-                    try:
-                        if self.page.is_visible(modal_sel, timeout=300):
-                            print(f"✅ Easy Apply flow active (detected: {modal_sel})")
-                            modal_appeared = True
-                            break
-                    except:
-                        pass
-                if modal_appeared:
-                    break
-                time.sleep(0.5)
-
-            if not modal_appeared:
-                self._screenshot("modal_not_found")
-                print("📊 Status: FAILED (Easy Apply modal did not open)")
-                return False
-
-            # --- Navigate through form steps ---
-            for step in range(15):
-                time.sleep(0.5)
-                print(f"  📝 Form step {step + 1}...")
-                self._screenshot(f"form_step_{step + 1}")
-
-                # Fill all fields on this page
-                self._fill_all_fields(self.page, user_data, resume_path)
-                time.sleep(0.5)
-
-                # 1. Submit application (final step)
-                if self._click_if_visible([
-                    "button[aria-label='Submit application']",
-                    "footer button:has-text('Submit application')",
-                    "button:has-text('Submit application')",
-                ]):
-                    print("📊 Status: APPLIED ✅ - Check your email for confirmation!")
-                    time.sleep(1)
-                    self._screenshot("applied_success")
-                    # Close the success popup
-                    self._click_if_visible([
-                        "button:has-text('Done')",
-                        "button[aria-label='Dismiss']",
-                        "button.artdeco-modal__dismiss",
-                    ])
-                    return True
-
-                # 2. Review (second to last step)
-                elif self._click_if_visible([
-                    "button[aria-label='Review your application']",
-                    "footer button:has-text('Review')",
-                    "button:has-text('Review')",
-                ]):
-                    print("  ➡️ Clicked Review")
+                if is_applied_btn or is_applied_badge or applied_text:
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) is ALREADY APPLIED on LinkedIn! Skipping to next...")
+                    self.mark_job_applied(jid, title)
                     continue
 
-                # 3. Next
-                elif self._click_if_visible([
-                    "button[aria-label='Continue to next step']",
-                    "footer button:has-text('Next')",
-                    "button:has-text('Next')",
-                ]):
-                    print("  ➡️ Clicked Next")
+                # Check 3: Is Easy Apply button available?
+                ea_btn = self.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first
+                if not ea_btn.is_visible(timeout=800):
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply. Skipping to next...")
                     continue
 
+                # Click Easy Apply and start filling
+                print(f"  ⚡ Job #{idx+1}: '{title}' (ID: {jid}) - Starting Easy Apply...")
+                ea_btn.click()
+                time.sleep(1)
+
+                submitted = self._fill_and_submit_modal(resume_path, user_data)
+                if submitted:
+                    self.mark_job_applied(jid, title)
+                    applied_count += 1
+                    print(f"  ✅ Applied to '{title}'! Total on this page: {applied_count}")
+                    print("  😴 Resting for 4 seconds...")
+                    time.sleep(4)
                 else:
-                    # Log what buttons ARE visible for debugging
-                    all_buttons = self.page.query_selector_all("button")
-                    visible_buttons = []
-                    for btn in all_buttons:
-                        try:
-                            if btn.is_visible():
-                                txt = btn.inner_text().strip()
-                                if txt:
-                                    visible_buttons.append(txt)
-                        except:
-                            pass
-                    print(f"  ⚠️ Visible buttons: {visible_buttons}")
-                    print("  ⚠️ No navigation button found. Stopping.")
-                    break
+                    print(f"  ⚠️ Form could not be auto-completed (custom questions). Discarding and moving to next...")
+                    self._dismiss_modal()
+                    self.mark_job_applied(jid, title)
+                    time.sleep(1)
 
-            print("📊 Status: FAILED (Could not complete all form steps)")
-            return False
+            except Exception as e:
+                print(f"  ⚠️ Error processing job '{title}': {e}. Moving to next...")
+                self._dismiss_modal()
+                continue
 
-        except Exception as e:
-            print(f"📊 Status: FAILED ({e})")
-            self._screenshot("exception_error")
-            return False
+        return applied_count
+
+    # Backwards compatibility
+    def apply_to_job(self, job_url, resume_path, user_data=None):
+        return self.apply_all_on_search_page(job_url, resume_path, user_data, max_apply_per_page=1) > 0
 
     def _click_if_visible(self, selectors, timeout=1000):
         """Try a list of selectors; click the first visible one. Returns True if clicked."""

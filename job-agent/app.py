@@ -35,9 +35,15 @@ def run_agent():
     print(f"📋 Total job targets queued: {len(jobs)}")
 
     applied_count = 0
+    daily_goal = 20
+
     try:
         # 4. Autonomous Loop
         for job in jobs:
+            if applied_count >= daily_goal:
+                print("🏆 Daily Goal Reached! Stopping.")
+                break
+
             try:
                 # Generate Custom Cover Letter
                 cover_letter = cl_gen.generate(job['title'], "Company", job['desc'])
@@ -50,21 +56,15 @@ def run_agent():
                     "cover_letter": cover_letter
                 }
 
-                # 5. AUTO-APPLY (No manual intervention)
-                print(f"\n⚡ AUTONOMOUS ATTEMPT: {job['title']}")
-                success = applier.apply_to_job(job['url'], resume_path, user_data=user_data)
-                
-                if success:
-                    applied_count += 1
-                    print(f"📈 Total Applied so far: {applied_count}")
-                
-                # Short rest to look human
-                print("😴 Resting for 5 seconds...")
-                time.sleep(5)
-
-                if applied_count >= 20:
-                    print("🏆 Daily Goal Reached! Stopping.")
-                    break
+                print(f"\n⚡ AUTONOMOUS HUNT: Searching {job['title']}...")
+                new_applied = applier.apply_all_on_search_page(
+                    search_url=job['url'],
+                    resume_path=resume_path,
+                    user_data=user_data,
+                    max_apply_per_page=15
+                )
+                applied_count += new_applied
+                print(f"📈 Total Applied so far: {applied_count}")
 
             except Exception as e:
                 print(f"❌ Critical loop error: {e}. Moving to next.")
