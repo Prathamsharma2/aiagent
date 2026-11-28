@@ -16,6 +16,7 @@ def run_agent():
         return
 
     # 2. Analyze Resume
+    analyzer = ResumeAnalyzer(resume_path)
     print("🔍 Analyzing your resume...")
     analysis = analyzer.analyze()
     print(f"✅ Found skills: {', '.join(analysis['top_skills'])}")
