@@ -11,7 +11,9 @@ def run_agent():
     # 1. Initialize Components
     script_dir = os.path.dirname(os.path.abspath(__file__))
     webd_resume = os.path.join(script_dir, "resume/WebDresume.pdf")
-    ds_resume = os.path.join(script_dir, "resume/Datascienceresume.pdf")
+    ds_resume = os.path.join(script_dir, "resume/Pratham_Sharma_Resume_Final_Dated.pdf")
+    if not os.path.exists(ds_resume):
+        ds_resume = os.path.join(script_dir, "resume/Datascienceresume.pdf")
     default_resume = ds_resume if os.path.exists(ds_resume) else webd_resume
 
     if not os.path.exists(default_resume):

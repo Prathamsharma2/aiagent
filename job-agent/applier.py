@@ -891,7 +891,7 @@ class JobApplier:
             # --- 10. Resume Selection or File Upload ---
             target_resume_name = os.path.basename(resume_path).lower() if resume_path else ""
             is_webd = "web" in target_resume_name
-            is_ds = "data" in target_resume_name
+            is_ds = not is_webd
 
             resume_selected = False
             resume_cards = page.query_selector_all("div.jobs-document-upload__title, [data-test-document-card]")
@@ -903,11 +903,22 @@ class JobApplier:
                         title_attr = (card.get_attribute("title") or "").lower()
                         full_info = f"{card_text} {title_attr}"
 
-                        if (is_webd and "web" in full_info) or (is_ds and "data" in full_info):
+                        match_target = False
+                        if is_webd and "web" in full_info:
+                            match_target = True
+                        elif is_ds and any(k in full_info for k in ["data", "pratham", "final", "dated"]):
+                            match_target = True
+
+                        if match_target:
                             radio = card.query_selector("input[type='radio']")
                             if radio:
-                                if not radio.is_checked():
-                                    radio.check()
+                                try:
+                                    radio.check(force=True)
+                                except:
+                                    try:
+                                        card.click(force=True)
+                                    except:
+                                        pass
                                 resume_selected = True
                                 break
                     except:

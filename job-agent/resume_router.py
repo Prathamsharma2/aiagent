@@ -11,7 +11,8 @@ class ResumeRouter:
             resume_dir = os.path.join(script_dir, "resume")
         self.resume_dir = resume_dir
         self.webd_resume = os.path.join(resume_dir, "WebDresume.pdf")
-        self.ds_resume = os.path.join(resume_dir, "Datascienceresume.pdf")
+        ds_named = os.path.join(resume_dir, "Pratham_Sharma_Resume_Final_Dated.pdf")
+        self.ds_resume = ds_named if os.path.exists(ds_named) else os.path.join(resume_dir, "Datascienceresume.pdf")
 
     def get_resume_for_job(self, job_title, job_desc=""):
         """
@@ -53,11 +54,11 @@ class ResumeRouter:
         if web_score > ds_score and os.path.exists(self.webd_resume):
             return self.webd_resume, "Web Development / Software (WebDresume.pdf)"
         elif ds_score > web_score and os.path.exists(self.ds_resume):
-            return self.ds_resume, "Data Science / AI (Datascienceresume.pdf)"
+            return self.ds_resume, f"Data Science / AI ({os.path.basename(self.ds_resume)})"
         elif any(w in title_lower for w in ["software", "frontend", "front end", "backend", "back end", "full stack", "web", "react", "node", "sde"]) and os.path.exists(self.webd_resume):
             return self.webd_resume, "Web Development / Software (WebDresume.pdf)"
         elif os.path.exists(self.ds_resume):
-            return self.ds_resume, "Data Science / AI (Datascienceresume.pdf)"
+            return self.ds_resume, f"Data Science / AI ({os.path.basename(self.ds_resume)})"
         elif os.path.exists(self.webd_resume):
             return self.webd_resume, "Web Development / Software (WebDresume.pdf)"
         else:
