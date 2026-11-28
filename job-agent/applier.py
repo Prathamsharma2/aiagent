@@ -5,14 +5,16 @@ import os
 import re
 import json
 from cover_letter import CoverLetterGenerator
+from resume_router import ResumeRouter
 
 class JobApplier:
-    def __init__(self, use_tor=False, cover_letter_gen=None):
+    def __init__(self, use_tor=False, cover_letter_gen=None, resume_router=None):
         self.use_tor = use_tor
         self.playwright = None
         self.browser_context = None
         self.page = None
         self.cl_gen = cover_letter_gen or CoverLetterGenerator()
+        self.resume_router = resume_router or ResumeRouter()
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.data_dir = os.path.join(script_dir, "data")
@@ -376,6 +378,14 @@ class JobApplier:
                 company_name, job_desc = self._extract_job_details()
                 print(f"  🏢 Company: {company_name}")
 
+                # Dynamically choose the best resume (Web Development vs Data Science)
+                active_resume_path = resume_path
+                if self.resume_router:
+                    chosen_path, resume_type = self.resume_router.get_resume_for_job(title, job_desc)
+                    if chosen_path:
+                        active_resume_path = chosen_path
+                    print(f"  📄 Target Resume: {resume_type}")
+
                 # Dynamically generate tailored cover letter for this specific job
                 job_user_data = dict(user_data) if user_data else {}
                 if self.cl_gen:
@@ -388,7 +398,7 @@ class JobApplier:
                 ea_btn.click()
                 time.sleep(1)
 
-                submitted = self._fill_and_submit_modal(resume_path, job_user_data)
+                submitted = self._fill_and_submit_modal(active_resume_path, job_user_data)
                 if submitted:
                     self.mark_job_applied(jid, title)
                     applied_count += 1
@@ -617,24 +627,49 @@ class JobApplier:
                     pass
 
             # --- 10. Resume Selection or File Upload ---
-            # If previous resumes are shown as radio cards, select the first one
+            target_resume_name = os.path.basename(resume_path).lower() if resume_path else ""
+            is_webd = "web" in target_resume_name
+            is_ds = "data" in target_resume_name
+
+            resume_selected = False
             resume_cards = page.query_selector_all("div.jobs-document-upload__title, [data-test-document-card]")
             if resume_cards:
+                # 1. Look for the card specifically matching the target resume
                 for card in resume_cards:
                     try:
-                        radio = card.query_selector("input[type='radio']")
-                        if radio and not radio.is_checked():
-                            radio.check()
-                            break
+                        card_text = card.inner_text().lower()
+                        title_attr = (card.get_attribute("title") or "").lower()
+                        full_info = f"{card_text} {title_attr}"
+
+                        if (is_webd and "web" in full_info) or (is_ds and "data" in full_info):
+                            radio = card.query_selector("input[type='radio']")
+                            if radio:
+                                if not radio.is_checked():
+                                    radio.check()
+                                resume_selected = True
+                                break
                     except:
                         pass
 
-            # If file input is present and file upload is required
+                # 2. Fallback: select first resume if no specific card matched
+                if not resume_selected:
+                    for card in resume_cards:
+                        try:
+                            radio = card.query_selector("input[type='radio']")
+                            if radio and not radio.is_checked():
+                                radio.check()
+                                resume_selected = True
+                                break
+                        except:
+                            pass
+
+            # If file input is present and needs file upload
             file_inputs = page.query_selector_all("input[type='file']")
             for file_input in file_inputs:
                 try:
-                    file_input.set_input_files(resume_path)
-                    time.sleep(1)
+                    if resume_path and os.path.exists(resume_path):
+                        file_input.set_input_files(resume_path)
+                        time.sleep(1)
                 except:
                     pass
 

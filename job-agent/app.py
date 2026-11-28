@@ -10,34 +10,41 @@ from cover_letter import CoverLetterGenerator
 def run_agent():
     # 1. Initialize Components
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    resume_path = os.path.join(script_dir, "resume/Datascienceresume.pdf")
-    if not os.path.exists(resume_path):
-        print(f"❌ Resume not found at {resume_path}.")
+    webd_resume = os.path.join(script_dir, "resume/WebDresume.pdf")
+    ds_resume = os.path.join(script_dir, "resume/Datascienceresume.pdf")
+    default_resume = ds_resume if os.path.exists(ds_resume) else webd_resume
+
+    if not os.path.exists(default_resume):
+        print(f"❌ No resume found in {os.path.join(script_dir, 'resume')}.")
         return
 
     # 2. Analyze Resume
-    analyzer = ResumeAnalyzer(resume_path)
+    analyzer = ResumeAnalyzer(default_resume)
     print("🔍 Analyzing your resume...")
     analysis = analyzer.analyze()
     print(f"✅ Found skills: {', '.join(analysis['top_skills'])}")
-    roles = analysis.get('roles', ['Data Scientist'])
-    print(f"🎯 Target Roles: {', '.join(roles)}")
 
-    # Smart Cover Letter Generator
+    # Smart Cover Letter Generator & Applier
     cl_gen = CoverLetterGenerator("Pratham Sharma", analysis['top_skills'])
     searcher = JobSearcher() 
     applier = JobApplier(use_tor=False, cover_letter_gen=cl_gen)
 
-    # 3. Search for Jobs
+    # 3. Target Roles (Software/Web Development + Data Science/AI)
+    all_target_roles = list(dict.fromkeys(
+        analysis.get('roles', []) + searcher.DATA_SCIENCE_ROLES + searcher.WEB_DEV_ROLES
+    ))
+    print(f"🎯 Target Roles ({len(all_target_roles)} total): {', '.join(all_target_roles[:6])}...")
+
+    # 4. Search for Jobs
     print("🏹 Opening Hunting Grounds...")
-    jobs = searcher.search_jobs_for_roles(roles, location="India", count_per_role=25)
-    print(f"📋 Total job targets queued: {len(jobs)}")
+    jobs = searcher.search_jobs_for_roles(all_target_roles, location="India", count_per_role=25)
+    print(f"📋 Total search queries queued: {len(jobs)}")
 
     applied_count = 0
     daily_goal = 20
 
     try:
-        # 4. Autonomous Loop
+        # 5. Autonomous Loop
         for job in jobs:
             if applied_count >= daily_goal:
                 print("🏆 Daily Goal Reached! Stopping.")
