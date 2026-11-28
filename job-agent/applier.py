@@ -4,13 +4,15 @@ import time
 import os
 import re
 import json
+from cover_letter import CoverLetterGenerator
 
 class JobApplier:
-    def __init__(self, use_tor=False):
+    def __init__(self, use_tor=False, cover_letter_gen=None):
         self.use_tor = use_tor
         self.playwright = None
         self.browser_context = None
         self.page = None
+        self.cl_gen = cover_letter_gen or CoverLetterGenerator()
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.data_dir = os.path.join(script_dir, "data")
@@ -174,6 +176,41 @@ class JobApplier:
 
         return False
 
+    def _extract_job_details(self):
+        """Extracts the company name and full job description from the currently active job pane."""
+        company_name = "Company"
+        for sel in [
+            'a[href*="/company/"]',
+            '.job-details-jobs-unified-top-card__company-name a',
+            '.jobs-unified-top-card__company-name',
+            '.job-card-container__company-name'
+        ]:
+            try:
+                matches = self.page.locator(sel).all()
+                for m in matches:
+                    t = m.inner_text().strip().split('\n')[0].strip()
+                    if t and t.lower() not in ['company', 'linkedin', 'home', 'jobs', 'for business']:
+                        company_name = t
+                        break
+                if company_name != "Company":
+                    break
+            except:
+                pass
+
+        job_desc = ""
+        try:
+            body_text = self.page.locator('body').inner_text()
+            if "About the job" in body_text:
+                idx = body_text.index("About the job")
+                job_desc = body_text[idx + len("About the job"):].strip()
+                for stop_phrase in ["About the company", "Similar jobs", "People also viewed", "How you match", "Show more"]:
+                    if stop_phrase in job_desc:
+                        job_desc = job_desc.split(stop_phrase)[0].strip()
+        except:
+            pass
+
+        return company_name, job_desc
+
     def apply_all_on_search_page(self, search_url, resume_path, user_data=None, max_apply_per_page=10):
         """
         Navigates to search results and iterates through all job cards.
@@ -253,12 +290,23 @@ class JobApplier:
                     print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply. Skipping to next...")
                     continue
 
+                # Extract real company name and job description from the page
+                company_name, job_desc = self._extract_job_details()
+                print(f"  🏢 Company: {company_name}")
+
+                # Dynamically generate tailored cover letter for this specific job
+                job_user_data = dict(user_data) if user_data else {}
+                if self.cl_gen:
+                    tailored_letter = self.cl_gen.generate(title, company_name, job_desc)
+                    job_user_data["cover_letter"] = tailored_letter
+                    print(f"  ✍️ Generated tailored cover letter ({len(tailored_letter)} chars)")
+
                 # Click Easy Apply and start filling
                 print(f"  ⚡ Job #{idx+1}: '{title}' (ID: {jid}) - Starting Easy Apply...")
                 ea_btn.click()
                 time.sleep(1)
 
-                submitted = self._fill_and_submit_modal(resume_path, user_data)
+                submitted = self._fill_and_submit_modal(resume_path, job_user_data)
                 if submitted:
                     self.mark_job_applied(jid, title)
                     applied_count += 1

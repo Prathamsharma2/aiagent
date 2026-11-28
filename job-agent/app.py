@@ -15,10 +15,6 @@ def run_agent():
         print(f"❌ Resume not found at {resume_path}.")
         return
 
-    analyzer = ResumeAnalyzer(resume_path)
-    searcher = JobSearcher() 
-    applier = JobApplier(use_tor=False)
-
     # 2. Analyze Resume
     print("🔍 Analyzing your resume...")
     analysis = analyzer.analyze()
@@ -26,8 +22,10 @@ def run_agent():
     roles = analysis.get('roles', ['Data Scientist'])
     print(f"🎯 Target Roles: {', '.join(roles)}")
 
-    # Letter Generator
+    # Smart Cover Letter Generator
     cl_gen = CoverLetterGenerator("Pratham Sharma", analysis['top_skills'])
+    searcher = JobSearcher() 
+    applier = JobApplier(use_tor=False, cover_letter_gen=cl_gen)
 
     # 3. Search for Jobs
     print("🏹 Opening Hunting Grounds...")
