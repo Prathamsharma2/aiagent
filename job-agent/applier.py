@@ -107,23 +107,27 @@ class JobApplier:
 
     def _ensure_all_modals_closed(self):
         """Ensures that any modal, popup, or overlay is completely dismissed before proceeding."""
-        for _ in range(5):
+        for _ in range(6):
             # 1. Close messaging bubbles
             self._close_messaging_overlays()
 
-            # 2. Click any Done, Dismiss, Close, or Discard buttons
+            # 2. Click any Not now, Done, Dismiss, Close, or Discard buttons
             self._click_if_visible([
+                "button:has-text('Not now')",
+                "button[aria-label*='Not now']",
                 "button:has-text('Done')",
                 "button[aria-label*='Done']",
                 "button[aria-label*='Dismiss']",
                 "button.artdeco-modal__dismiss",
                 "button[data-test-modal-close-btn]",
+                "button:has-text('Maybe later')",
+                "button:has-text('No thanks')",
                 "button:has-text('Discard')",
                 "[data-test-dialog-primary-btn]",
                 "button[data-control-name='discard_application_confirm_btn']",
                 ".artdeco-modal__confirm-dialog-btn",
                 "button[aria-label*='Close']",
-                "button:has-text('No thanks')"
+                "button:has-text('Close')"
             ], timeout=400)
 
             # 3. Press Escape key
@@ -132,13 +136,13 @@ class JobApplier:
             except:
                 pass
 
-            time.sleep(0.4)
+            time.sleep(0.3)
 
             # 4. Check if any modal or overlay is still visible
             still_open = False
             for sel in [".artdeco-modal-overlay", "div[role='dialog']", ".jobs-easy-apply-modal", "[data-test-modal]"]:
                 try:
-                    if self.page.locator(sel).first.is_visible(timeout=200):
+                    if self.page.locator(sel).first.is_visible(timeout=150):
                         still_open = True
                         break
                 except:
@@ -152,6 +156,9 @@ class JobApplier:
         try:
             dismissed = False
             for dismiss_sel in [
+                "button:has-text('Not now')",
+                "button[aria-label*='Not now']",
+                "button:has-text('Done')",
                 "button[aria-label*='Dismiss']",
                 "button[data-test-modal-close-btn]",
                 "button.artdeco-modal__dismiss",
@@ -384,7 +391,33 @@ class JobApplier:
                 "button:has-text('Submit')",
             ], timeout=1500):
                 print("  📊 Status: APPLIED ✅ - Application submitted successfully!")
-                time.sleep(2.5)
+                time.sleep(2)
+
+                # Actively dismiss post-submission upsell dialog ("Not now", "Done", etc.)
+                for _ in range(8):
+                    clicked = self._click_if_visible([
+                        "button:has-text('Not now')",
+                        "button[aria-label*='Not now']",
+                        "button:has-text('Done')",
+                        "button[aria-label*='Done']",
+                        "button[aria-label*='Dismiss']",
+                        "button.artdeco-modal__dismiss",
+                        "button[data-test-modal-close-btn]",
+                        "button:has-text('Maybe later')",
+                        "button:has-text('No thanks')",
+                        "button[aria-label*='Close']",
+                        "button:has-text('Close')",
+                    ], timeout=800)
+                    if clicked:
+                        print("  ✨ Dismissed post-apply popup ('Not now' / 'Done')!")
+                        time.sleep(1)
+                        break
+                    try:
+                        self.page.keyboard.press("Escape")
+                    except:
+                        pass
+                    time.sleep(0.5)
+
                 self._ensure_all_modals_closed()
                 return True
 
@@ -524,6 +557,9 @@ class JobApplier:
             jid = "unknown"
 
             try:
+                # Ensure no stray popup or overlay is blocking clicks
+                self._ensure_all_modals_closed()
+
                 # Find the clickable title/card on screen
                 job_el = self.page.locator(f'text="{title}"').first
                 try:
