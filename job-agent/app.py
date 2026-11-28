@@ -60,7 +60,11 @@ def run_agent():
                 user_data = {
                     "name": "Pratham Sharma",
                     "email": "kkrpratham33@gmail.com",
-                    "phone": "+91 7988105180",
+                    "phone": "7988105180",
+                    "country": "India",
+                    "city": "Haryana",
+                    "state": "Haryana",
+                    "postal_code": "136118",
                     "cover_letter": cover_letter
                 }
 

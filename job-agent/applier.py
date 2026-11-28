@@ -251,13 +251,21 @@ class JobApplier:
                 except:
                     pass
 
-            # 4. Unselected select dropdowns
+            # 4. Unselected select dropdowns (India-first priority)
             for sel in page.query_selector_all("select"):
                 try:
                     val = sel.input_value()
                     if not val or val == "Select an option" or val == "":
                         opts = sel.query_selector_all("option")
-                        if len(opts) > 1:
+                        selected_in = False
+                        for opt in opts:
+                            t = opt.inner_text().lower()
+                            v = opt.get_attribute("value") or ""
+                            if "india" in t or "+91" in t or v.lower() == "in" or v.lower() == "+91":
+                                sel.select_option(value=v)
+                                selected_in = True
+                                break
+                        if not selected_in and len(opts) > 1:
                             sel.select_option(index=1)
                 except:
                     pass
@@ -687,12 +695,33 @@ class JobApplier:
         if not user_data:
             return
         try:
-            # --- 1. Phone ---
+            # --- 1. Country Code & Phone (India +91) ---
+            for sel in [
+                "select[id*='countryCode']",
+                "select[id*='phoneNumber-country']",
+                "select[name*='countryCode']",
+                "select[name*='country']",
+                "select[id*='country']"
+            ]:
+                try:
+                    if page.is_visible(sel, timeout=100):
+                        dropdown = page.locator(sel).first
+                        options = dropdown.query_selector_all("option")
+                        for opt in options:
+                            t = opt.inner_text().lower()
+                            val = opt.get_attribute("value") or ""
+                            if "india" in t or "+91" in t or val.lower() == "in" or val.lower() == "+91":
+                                dropdown.select_option(value=val)
+                                break
+                except:
+                    pass
+
             for sel in ["input[id*='phoneNumber']", "input[type='tel']", "input[name*='phone']"]:
                 if page.is_visible(sel, timeout=50):
                     current = page.input_value(sel)
                     if not current.strip():
-                        page.fill(sel, user_data.get("phone", "+91 7988105180"))
+                        # Fill 10-digit Indian mobile number
+                        page.fill(sel, user_data.get("phone", "7988105180"))
                     break
 
             # --- 2. First Name ---
@@ -755,7 +784,17 @@ class JobApplier:
                         inp.fill("https://github.com/Prathamsharma2")
                     elif any(w in context for w in ["website", "portfolio", "url"]):
                         inp.fill("https://github.com/Prathamsharma2")
-                    elif any(w in context for w in ["city", "location", "address"]):
+                    elif any(w in context for w in ["country", "nation", "citizenship"]):
+                        inp.fill("India")
+                    elif any(w in context for w in ["nationality"]):
+                        inp.fill("Indian")
+                    elif any(w in context for w in ["state", "province"]):
+                        inp.fill("Haryana")
+                    elif any(w in context for w in ["city", "town"]):
+                        inp.fill("Gurugram")
+                    elif any(w in context for w in ["zip", "postal", "pin"]):
+                        inp.fill("136118")
+                    elif any(w in context for w in ["location", "address"]):
                         inp.fill("Haryana, India")
                     elif any(w in context for w in ["gpa", "percentage", "cgpa"]):
                         inp.fill("8.5")
@@ -857,13 +896,28 @@ class JobApplier:
                 except:
                     pass
 
-            # --- 9. Dropdowns & Custom Comboboxes ---
+            # --- 9. Dropdowns & Custom Comboboxes (India-First) ---
             dropdowns = page.query_selector_all("select")
             for dropdown in dropdowns:
                 try:
                     if not dropdown.is_visible():
                         continue
                     options = dropdown.query_selector_all("option")
+
+                    # Step A: Check if India or +91 is an option in this dropdown
+                    selected = False
+                    for opt in options:
+                        t = opt.inner_text().lower()
+                        val = opt.get_attribute("value") or ""
+                        if "india" in t or "+91" in t or val.lower() == "in" or val.lower() == "+91":
+                            dropdown.select_option(value=val)
+                            selected = True
+                            break
+
+                    if selected:
+                        continue
+
+                    # Step B: Otherwise pick first valid non-placeholder option
                     for opt in options:
                         val = opt.get_attribute("value") or ""
                         text = opt.inner_text().lower()
@@ -873,18 +927,37 @@ class JobApplier:
                 except:
                     pass
 
-            # Custom Artdeco comboboxes
+            # Custom Artdeco comboboxes (Search India first)
             comboboxes = page.query_selector_all("div[role='combobox'], input[role='combobox']")
             for combo in comboboxes:
                 try:
-                    if combo.is_visible():
-                        val = combo.input_value() if hasattr(combo, 'input_value') else ""
-                        if not val.strip():
-                            combo.click()
+                    if not combo.is_visible():
+                        continue
+                    val = combo.input_value() if hasattr(combo, 'input_value') else ""
+                    if val.strip():
+                        continue
+
+                    c_aria = (combo.get_attribute("aria-label") or "").lower()
+                    c_ph = (combo.get_attribute("placeholder") or "").lower()
+                    c_ctx = f"{c_aria} {c_ph}"
+
+                    # If it's a Country or Location combobox
+                    if any(w in c_ctx for w in ["country", "nation", "citizenship"]):
+                        combo.click()
+                        time.sleep(0.3)
+                        if hasattr(combo, 'fill'):
+                            combo.fill("India")
                             time.sleep(0.4)
-                            first_opt = page.query_selector("div[role='option'], li[role='option']")
-                            if first_opt and first_opt.is_visible():
-                                first_opt.click()
+                        in_opt = page.query_selector("div[role='option']:has-text('India'), li[role='option']:has-text('India')")
+                        if in_opt:
+                            in_opt.click()
+                            continue
+
+                    combo.click()
+                    time.sleep(0.4)
+                    first_opt = page.query_selector("div[role='option'], li[role='option']")
+                    if first_opt and first_opt.is_visible():
+                        first_opt.click()
                 except:
                     pass
 
