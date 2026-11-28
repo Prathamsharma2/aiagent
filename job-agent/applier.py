@@ -107,106 +107,103 @@ class JobApplier:
 
     def _ensure_all_modals_closed(self):
         """Ensures that any modal, popup, or overlay is completely dismissed before proceeding."""
-        for _ in range(6):
-            # 1. Close messaging bubbles
-            self._close_messaging_overlays()
+        self._close_messaging_overlays()
 
-            # 2. Click any Not now, Done, Dismiss, Close, or Discard buttons
-            self._click_if_visible([
-                "button:has-text('Not now')",
-                "button[aria-label*='Not now']",
-                "button:has-text('Done')",
-                "button[aria-label*='Done']",
-                "button[aria-label*='Dismiss']",
-                "button.artdeco-modal__dismiss",
-                "button[data-test-modal-close-btn]",
-                "button:has-text('Maybe later')",
-                "button:has-text('No thanks')",
-                "button:has-text('Discard')",
-                "[data-test-dialog-primary-btn]",
-                "button[data-control-name='discard_application_confirm_btn']",
-                ".artdeco-modal__confirm-dialog-btn",
-                "button[aria-label*='Close']",
-                "button:has-text('Close')"
-            ], timeout=400)
-
-            # 3. Press Escape key
+        # Only attempt to dismiss if an actual modal/dialog is visible on screen
+        for _ in range(3):
+            modal_locator = self.page.locator("div[role='dialog'], .artdeco-modal, .jobs-easy-apply-modal").first
+            is_modal = False
             try:
-                self.page.keyboard.press("Escape")
+                is_modal = modal_locator.is_visible(timeout=150)
             except:
                 pass
 
-            time.sleep(0.3)
+            if not is_modal:
+                break
 
-            # 4. Check if any modal or overlay is still visible
-            still_open = False
-            for sel in [".artdeco-modal-overlay", "div[role='dialog']", ".jobs-easy-apply-modal", "[data-test-modal]"]:
+            # Click dismiss or discard buttons STRICTLY SCOPED INSIDE THE MODAL (never page-wide!)
+            for sel in [
+                "div[role='dialog'] button:has-text('Not now')",
+                "div[role='dialog'] button.artdeco-modal__dismiss",
+                "div[role='dialog'] button[data-test-modal-close-btn]",
+                "div[role='dialog'] button[aria-label*='Dismiss']",
+                "div[role='dialog'] button:has-text('Discard')",
+                "div[role='dialog'] button:has-text('Done')",
+                "div[role='dialog'] button:has-text('Close')",
+                ".artdeco-modal button.artdeco-modal__dismiss",
+                ".artdeco-modal button[data-test-modal-close-btn]",
+                ".artdeco-modal button:has-text('Not now')",
+                ".artdeco-modal button:has-text('Discard')",
+                "[data-test-dialog-primary-btn]"
+            ]:
                 try:
-                    if self.page.locator(sel).first.is_visible(timeout=150):
-                        still_open = True
+                    b = self.page.locator(sel).first
+                    if b.is_visible(timeout=250):
+                        try:
+                            b.click(timeout=1500, force=True)
+                        except:
+                            b.dispatch_event("click")
+                        time.sleep(0.4)
                         break
                 except:
                     pass
 
-            if not still_open:
-                break
-            else:
-                # Direct JavaScript fallback to click 'Not now' or dismiss if still open
-                try:
-                    self.page.evaluate("""() => {
-                        const btns = Array.from(document.querySelectorAll('button'));
-                        for (const b of btns) {
-                            const txt = (b.innerText || '').trim().toLowerCase();
-                            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-                            if (txt === 'not now' || aria.includes('not now') || txt === 'done' || aria.includes('dismiss')) {
-                                b.click();
-                                break;
-                            }
-                        }
-                        const dismiss = document.querySelector('button.artdeco-modal__dismiss, [data-test-modal-close-btn]');
-                        if (dismiss) dismiss.click();
-                    }""")
-                    time.sleep(0.3)
-                except:
-                    pass
+            try:
+                self.page.keyboard.press("Escape")
+            except:
+                pass
+            time.sleep(0.3)
 
     def _dismiss_modal(self):
         """Cleanly dismiss an open Easy Apply modal and confirm discard."""
         try:
-            dismissed = False
-            for dismiss_sel in [
-                "button:has-text('Not now')",
-                "button[aria-label*='Not now']",
-                "button:has-text('Done')",
-                "button[aria-label*='Dismiss']",
-                "button[data-test-modal-close-btn]",
-                "button.artdeco-modal__dismiss",
-                "button[aria-label*='Close']",
-                "button[aria-label*='Cancel']"
+            # 1. Close button on dialog (STRICTLY SCOPED INSIDE DIALOG)
+            for sel in [
+                "div[role='dialog'] button:has-text('Not now')",
+                "div[role='dialog'] button.artdeco-modal__dismiss",
+                "div[role='dialog'] button[data-test-modal-close-btn]",
+                "div[role='dialog'] button[aria-label*='Dismiss']",
+                "div[role='dialog'] button:has-text('Done')",
+                "div[role='dialog'] button:has-text('Close')",
+                ".artdeco-modal button.artdeco-modal__dismiss",
+                ".artdeco-modal button[data-test-modal-close-btn]"
             ]:
-                btn = self.page.locator(dismiss_sel).first
-                if btn.is_visible(timeout=400):
-                    btn.click()
-                    dismissed = True
-                    time.sleep(0.8)
-                    break
+                try:
+                    b = self.page.locator(sel).first
+                    if b.is_visible(timeout=300):
+                        try:
+                            b.click(timeout=1500, force=True)
+                        except:
+                            b.dispatch_event("click")
+                        time.sleep(0.5)
+                        break
+                except:
+                    pass
 
-            if not dismissed:
+            try:
                 self.page.keyboard.press("Escape")
-                time.sleep(0.5)
+            except:
+                pass
+            time.sleep(0.4)
 
-            # Confirm discard if prompt appears
+            # 2. Confirm discard if prompt appears
             for discard_sel in [
                 "button:has-text('Discard')",
                 "[data-test-dialog-primary-btn]",
                 "button[data-control-name='discard_application_confirm_btn']",
                 ".artdeco-modal__confirm-dialog-btn"
             ]:
-                btn = self.page.locator(discard_sel).first
-                if btn.is_visible(timeout=500):
-                    btn.click()
-                    time.sleep(0.8)
-                    break
+                try:
+                    b = self.page.locator(discard_sel).first
+                    if b.is_visible(timeout=400):
+                        try:
+                            b.click(timeout=1500, force=True)
+                        except:
+                            b.dispatch_event("click")
+                        time.sleep(0.5)
+                        break
+                except:
+                    pass
         except Exception as e:
             print(f"  ⚠️ Error dismissing modal: {e}")
 
@@ -585,15 +582,23 @@ class JobApplier:
             except:
                 pass
 
-        # Fallback if no specific title links found
+        # Fallback if no specific title links found: discover list cards
         if not job_entries:
-            dismiss_btns = self.page.locator('button[aria-label*="Dismiss "]').all()
-            for b in dismiss_btns:
+            cards = self.page.locator(".jobs-search-results-list li, .scaffold-layout__list-container li, li.jobs-search-results__list-item, div.job-card-container").all()
+            for c in cards:
                 try:
-                    aria = b.get_attribute("aria-label") or ""
-                    t = aria.replace("Dismiss ", "").replace(" job", "").strip()
-                    if t:
-                        job_entries.append({"title": t, "jid": "unknown", "btn": b})
+                    title_elem = c.locator("a[href*='/jobs/view/'], a.job-card-list__title--link, a.job-card-container__link, strong").first
+                    if title_elem.is_visible(timeout=100):
+                        t = title_elem.inner_text().strip().split('\n')[0].strip()
+                        c_jid = c.get_attribute("data-occludable-job-id") or c.get_attribute("data-job-id") or "unknown"
+                        if t and (c_jid == "unknown" or c_jid not in seen_jids):
+                            if c_jid != "unknown":
+                                seen_jids.add(c_jid)
+                            job_entries.append({
+                                "title": t,
+                                "jid": c_jid,
+                                "link": title_elem
+                            })
                 except:
                     pass
 
@@ -609,7 +614,6 @@ class JobApplier:
             title = entry.get("title", "Job Role")
             jid = entry.get("jid", "unknown")
             link = entry.get("link")
-            btn = entry.get("btn")
 
             try:
                 # 1. Quick pre-check before clicking: Already applied or handled?
@@ -634,14 +638,6 @@ class JobApplier:
                             opened = True
                         except:
                             pass
-
-                if not opened and btn:
-                    try:
-                        btn.scroll_into_view_if_needed(timeout=1500)
-                        btn.click(timeout=2000, force=True)
-                        opened = True
-                    except:
-                        pass
 
                 if not opened:
                     try:
