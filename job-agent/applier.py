@@ -45,7 +45,7 @@ class JobApplier:
         except Exception as e:
             print(f"⚠️ Error saving applied job id: {e}")
 
-    def start_session(self):
+    def start_session(self, headless=False):
         """Starts a persistent browser session and keeps it open."""
         if self.browser_context:
             return
@@ -61,7 +61,7 @@ class JobApplier:
 
         self.browser_context = self.playwright.chromium.launch_persistent_context(
             user_data_dir=session_dir,
-            headless=False,
+            headless=headless,
             args=browser_args,
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
@@ -427,11 +427,28 @@ class JobApplier:
 
                 # Actively dismiss post-submission upsell dialog ("Not now", "Done", etc.)
                 for _ in range(8):
+                    try:
+                        self.page.evaluate('''() => {
+                            for (const b of document.querySelectorAll("div[role='dialog'] button, .artdeco-modal button, button")) {
+                                const t = (b.innerText || "").trim().toLowerCase();
+                                const a = (b.getAttribute("aria-label") || "").trim().toLowerCase();
+                                if (t === "not now" || t === "done" || t === "maybe later" || t === "no thanks" || a.includes("dismiss") || a.includes("close")) {
+                                    b.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }''')
+                    except:
+                        pass
+
                     clicked = self._click_if_visible([
+                        "div[role='dialog'] button:has-text('Not now')",
                         "button:has-text('Not now')",
                         "button[aria-label*='Not now']",
                         "button:has-text('Done')",
                         "button[aria-label*='Done']",
+                        "div[role='dialog'] button[aria-label*='Dismiss']",
                         "button[aria-label*='Dismiss']",
                         "button.artdeco-modal__dismiss",
                         "button[data-test-modal-close-btn]",
@@ -439,7 +456,7 @@ class JobApplier:
                         "button:has-text('No thanks')",
                         "button[aria-label*='Close']",
                         "button:has-text('Close')",
-                    ], timeout=800)
+                    ], timeout=500)
                     if clicked:
                         print("  ✨ Dismissed post-apply popup ('Not now' / 'Done')!")
                         time.sleep(1)
@@ -556,33 +573,63 @@ class JobApplier:
         # Ensure any leftover overlays or messaging windows are closed
         self._ensure_all_modals_closed()
 
-        # Discover all job entries on the page via title links
-        links = self.page.locator("a.job-card-list__title--link, a.job-card-container__link, .jobs-search-results-list a[href*='/jobs/view/']").all()
+        # Discover all job entries on the page
         job_entries = []
         seen_jids = set()
 
-        for l in links:
-            try:
-                href = l.get_attribute("href") or ""
-                m = re.search(r'/jobs/view/(\d+)', href)
-                jid = m.group(1) if m else "unknown"
-                t = l.inner_text().strip().split('\n')[0].strip()
-                if not t:
-                    continue
-                if jid != "unknown" and jid in seen_jids:
-                    continue
-                if jid != "unknown":
-                    seen_jids.add(jid)
+        # 1. Modern LinkedIn AI-Search cards (div[componentkey*='job-card-component-ref-'])
+        try:
+            modern_cards = self.page.locator("[componentkey*='job-card-component-ref-']").all()
+            for c in modern_cards:
+                try:
+                    ck = c.get_attribute("componentkey") or ""
+                    m = re.search(r'job-card-component-ref-(\d+)', ck)
+                    jid = m.group(1) if m else "unknown"
+                    if jid != "unknown" and jid in seen_jids:
+                        continue
+                    full_text = c.inner_text().strip()
+                    lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+                    t = lines[0] if lines else "Job"
+                    if t.lower() in ["applied", "viewed", "promoted", "new", "actively reviewing applicants"] and len(lines) > 1:
+                        t = lines[1]
+                    if jid != "unknown":
+                        seen_jids.add(jid)
 
-                job_entries.append({
-                    "title": t,
-                    "jid": jid,
-                    "link": l
-                })
-            except:
-                pass
+                    job_entries.append({
+                        "title": t,
+                        "jid": jid,
+                        "link": c
+                    })
+                except:
+                    pass
+        except:
+            pass
 
-        # Fallback if no specific title links found: discover list cards
+        # 2. Classic fallback if modern cards not found
+        if not job_entries:
+            links = self.page.locator("a.job-card-list__title--link, a.job-card-container__link, .jobs-search-results-list a[href*='/jobs/view/']").all()
+            for l in links:
+                try:
+                    href = l.get_attribute("href") or ""
+                    m = re.search(r'/jobs/view/(\d+)', href)
+                    jid = m.group(1) if m else "unknown"
+                    t = l.inner_text().strip().split('\n')[0].strip()
+                    if not t:
+                        continue
+                    if jid != "unknown" and jid in seen_jids:
+                        continue
+                    if jid != "unknown":
+                        seen_jids.add(jid)
+
+                    job_entries.append({
+                        "title": t,
+                        "jid": jid,
+                        "link": l
+                    })
+                except:
+                    pass
+
+        # 3. Additional classic container fallback
         if not job_entries:
             cards = self.page.locator(".jobs-search-results-list li, .scaffold-layout__list-container li, li.jobs-search-results__list-item, div.job-card-container").all()
             for c in cards:
@@ -629,19 +676,23 @@ class JobApplier:
                 if link:
                     try:
                         link.scroll_into_view_if_needed(timeout=1500)
-                        time.sleep(0.2)
-                        link.click(timeout=2000, force=True)
+                        time.sleep(0.3)
+                        link.click(timeout=2000)
                         opened = True
                     except Exception:
                         try:
-                            link.dispatch_event("click")
+                            link.click(timeout=1500, force=True)
                             opened = True
                         except:
-                            pass
+                            try:
+                                link.dispatch_event("click")
+                                opened = True
+                            except:
+                                pass
 
                 if not opened:
                     try:
-                        card_loc = self.page.locator(f".jobs-search-results-list text='{title}'").first
+                        card_loc = self.page.locator(f"[componentkey*='{jid}'], .jobs-search-results-list text='{title}'").first
                         card_loc.scroll_into_view_if_needed(timeout=1500)
                         card_loc.click(timeout=2000, force=True)
                         opened = True
@@ -649,7 +700,7 @@ class JobApplier:
                         print(f"  ⏭️ Job #{idx+1}: '{title}' could not be clicked ({e}). Skipping...")
                         continue
 
-                time.sleep(1.6)
+                time.sleep(1.8)
 
                 # 3. Extract Job ID from page URL if it was unknown
                 if jid == "unknown":
@@ -675,7 +726,7 @@ class JobApplier:
                     continue
 
                 # 5. Check if already marked 'Applied' on LinkedIn
-                applied_btn = self.page.locator('.jobs-details__top-card button:has-text("Applied"), .jobs-s-apply button:has-text("Applied"), button:has-text("Applied")').first
+                applied_btn = self.page.locator('.jobs-details__top-card button:has-text("Applied"), .jobs-details__top-card a:has-text("Applied"), .jobs-s-apply button:has-text("Applied"), button:has-text("Applied"), a:has-text("Applied")').first
                 is_applied_btn = applied_btn.is_visible(timeout=200) if applied_btn else False
                 applied_badge = self.page.locator('.jobs-s-apply__applied-badge, .jobs-details__top-card .artdeco-inline-feedback--success').first
                 is_applied_badge = applied_badge.is_visible(timeout=200) if applied_badge else False
@@ -693,18 +744,25 @@ class JobApplier:
                         self.mark_job_applied(jid, title)
                     continue
 
-                # 6. Locate Easy Apply button in the details pane
+                # 6. Locate Easy Apply button or anchor in the details pane
                 ea_btn = None
                 for _ in range(8):
                     for sel in [
+                        "[aria-label*='Easy Apply to this job']",
+                        "a[aria-label*='Easy Apply']",
+                        "button[aria-label*='Easy Apply']",
+                        "a:has-text('Easy Apply'):not(#searchFilter_f_AL):not([aria-label*='filter'])",
+                        "button:has-text('Easy Apply'):not(#searchFilter_f_AL):not([aria-label*='filter'])",
+                        ".jobs-apply-button--top-card a",
                         ".jobs-apply-button--top-card button",
+                        ".jobs-details__top-card a",
                         ".jobs-details__top-card button",
+                        ".jobs-s-apply a",
                         ".jobs-s-apply button",
+                        "a.jobs-apply-button",
                         "button.jobs-apply-button",
                         "div.jobs-apply-button--top-card button",
-                        ".jobs-details__top-card button:has-text('Easy Apply')",
-                        "button[aria-label*='Easy Apply to']",
-                        "button:has-text('Easy Apply'):not(#searchFilter_f_AL):not([aria-label*='filter'])"
+                        "div.jobs-apply-button--top-card a",
                     ]:
                         try:
                             loc = self.page.locator(sel).first
