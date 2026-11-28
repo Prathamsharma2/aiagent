@@ -37,7 +37,7 @@ def run_agent():
 
     # 4. Search for Jobs
     print("🏹 Opening Hunting Grounds...")
-    jobs = searcher.search_jobs_for_roles(all_target_roles, location="India", count_per_role=50)
+    jobs = searcher.search_jobs_for_roles(all_target_roles, location="India", count_per_role=25)
     print(f"📋 Total search queries queued: {len(jobs)}")
 
     applied_count = 0

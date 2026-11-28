@@ -147,43 +147,6 @@ class JobApplier:
             if not still_open:
                 break
 
-    def _scroll_job_list(self):
-        """Scrolls the left-side job list container so LinkedIn renders all 25 jobs into the DOM."""
-        try:
-            list_container = None
-            for sel in [
-                ".jobs-search-results-list",
-                ".scaffold-layout__list",
-                "div.jobs-search-results-list",
-                ".jobs-search-results__list"
-            ]:
-                loc = self.page.locator(sel).first
-                try:
-                    if loc.is_visible(timeout=400):
-                        list_container = loc
-                        break
-                except:
-                    pass
-
-            if list_container:
-                for _ in range(5):
-                    self.page.evaluate('''el => {
-                        if (el) el.scrollTop += 700;
-                    }''', list_container.element_handle())
-                    time.sleep(0.3)
-                self.page.evaluate('''el => {
-                    if (el) el.scrollTop = 0;
-                }''', list_container.element_handle())
-                time.sleep(0.4)
-            else:
-                for _ in range(4):
-                    self.page.evaluate("window.scrollBy(0, 600)")
-                    time.sleep(0.3)
-                self.page.evaluate("window.scrollTo(0, 0)")
-                time.sleep(0.4)
-        except Exception:
-            pass
-
     def _dismiss_modal(self):
         """Cleanly dismiss an open Easy Apply modal and confirm discard."""
         try:
@@ -510,9 +473,8 @@ class JobApplier:
 
     def apply_all_on_search_page(self, search_url, resume_path, user_data=None, max_apply_per_page=15):
         """
-        Navigates to search results and iterates through all job cards.
-        Scrolls the job list so that all 25 jobs are loaded in the DOM.
-        Iterates over each card with scroll_into_view_if_needed so no cards are missed.
+        Navigates to search results and iterates through all discovered job cards.
+        No unnecessary reloads during iteration.
         Returns the number of successfully submitted applications.
         """
         if not self.browser_context:
@@ -521,7 +483,7 @@ class JobApplier:
         print(f"🚀 Navigating to: {search_url}")
         try:
             self.page.goto(search_url, timeout=45000, wait_until="domcontentloaded")
-            time.sleep(4)
+            time.sleep(3)
         except Exception as e:
             print(f"📊 Status: FAILED (Navigation Error: {e})")
             return 0
@@ -529,136 +491,85 @@ class JobApplier:
         # Ensure any leftover overlays or messaging windows are closed
         self._ensure_all_modals_closed()
 
-        # Scroll the left job list to load all ~25 cards
-        self._scroll_job_list()
+        # Discover all job entries on the page
+        job_titles = []
+        dismiss_btns = self.page.locator('button[aria-label*="Dismiss "]').all()
+        if dismiss_btns:
+            for b in dismiss_btns:
+                aria = b.get_attribute("aria-label") or ""
+                t = aria.replace("Dismiss ", "").replace(" job", "").strip()
+                if t and t not in job_titles:
+                    job_titles.append(t)
 
-        # Find all job card elements on the search page
-        card_selectors = [
-            "li[data-occludable-job-id]",
-            "div.job-card-container",
-            "li.jobs-search-results__list-item",
-            ".scaffold-layout__list-container li.scaffold-layout__list-item"
-        ]
-        
-        card_elements = []
-        for sel in card_selectors:
-            found = self.page.locator(sel).all()
-            if len(found) >= 5:
-                card_elements = found
-                break
-
-        if not card_elements:
+        if not job_titles:
             # Fallback to finding title links
-            card_elements = self.page.locator("a.job-card-list__title--link, a.job-card-container__link").all()
+            links = self.page.locator('a.job-card-list__title--link, a.job-card-container__link, a[data-control-name="job_card_click"]').all()
+            for l in links:
+                try:
+                    t = l.inner_text().strip().split('\n')[0].strip()
+                    if t and t not in job_titles:
+                        job_titles.append(t)
+                except:
+                    pass
 
-        total_cards = len(card_elements)
-        print(f"📋 Discovered {total_cards} job cards on this search page.")
+        print(f"📋 Discovered {len(job_titles)} jobs on this search page.")
 
         applied_count = 0
 
-        for idx in range(total_cards):
+        for idx, title in enumerate(job_titles):
             if applied_count >= max_apply_per_page:
                 print(f"🎯 Target of {max_apply_per_page} applications reached on this page.")
                 break
 
             jid = "unknown"
-            title = "Job Role"
 
             try:
-                # Re-query card by index to avoid stale DOM references
-                card = None
-                for sel in card_selectors:
-                    cards_now = self.page.locator(sel)
-                    if cards_now.count() > idx:
-                        card = cards_now.nth(idx)
-                        break
-
-                if not card:
-                    continue
-
-                # Scroll the card into view so it is guaranteed to be rendered & clickable
+                # Find the clickable title/card on screen
+                job_el = self.page.locator(f'text="{title}"').first
                 try:
-                    card.scroll_into_view_if_needed(timeout=2500)
+                    job_el.scroll_into_view_if_needed(timeout=2000)
                     time.sleep(0.3)
+                    job_el.click(force=True)
                 except:
-                    pass
+                    try:
+                        job_el.click()
+                    except Exception as e:
+                        print(f"  ⏭️ Job #{idx+1}: '{title}' could not be clicked ({e}). Skipping...")
+                        continue
+
+                time.sleep(1.5)
 
                 # Extract Job ID
-                try:
-                    jid = card.get_attribute("data-occludable-job-id") or card.get_attribute("data-job-id") or "unknown"
-                except:
-                    pass
-
-                # Extract Job Title
-                try:
-                    title_loc = card.locator("a.job-card-list__title--link, a.job-card-container__link, strong, span[aria-hidden='true']").first
-                    if title_loc.is_visible(timeout=300):
-                        t = title_loc.inner_text().strip().split('\n')[0].strip()
-                        if t:
-                            title = t
-                except:
-                    pass
+                m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
+                jid = m.group(1) if m else "unknown"
 
                 # Check 1: In local applied history or session skipped?
                 if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
                     print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already applied/handled. Skipping...")
                     continue
 
-                # Check 2: Marked 'Applied' on the card?
-                card_text = ""
-                try:
-                    card_text = card.inner_text().lower()
-                except:
-                    pass
+                # Check 2: Marked 'Applied' on LinkedIn?
+                applied_btn = self.page.locator('button:has-text("Applied")').first
+                is_applied_btn = applied_btn.is_visible(timeout=250) if applied_btn else False
+                applied_badge = self.page.locator('.jobs-s-apply__applied-badge').first
+                is_applied_badge = applied_badge.is_visible(timeout=250) if applied_badge else False
 
-                if "applied" in card_text and "easy apply" not in card_text:
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) is already marked Applied on LinkedIn! Skipping...")
-                    if jid != "unknown":
-                        self.mark_job_applied(jid, title)
-                    continue
+                applied_text = False
+                top_actions = self.page.locator('.jobs-apply-button--top-card, .jobs-s-apply, .jobs-details__top-card').all()
+                for ta in top_actions:
+                    if 'applied' in ta.inner_text().lower():
+                        applied_text = True
+                        break
 
-                # Click the card to open details in right pane
-                click_target = card.locator("a.job-card-list__title--link, a.job-card-container__link").first
-                try:
-                    if click_target.is_visible(timeout=500):
-                        click_target.click(force=True)
-                    else:
-                        card.click(force=True)
-                except Exception:
-                    card.click()
-
-                time.sleep(1.5)
-
-                # Extract real JID from page URL if still unknown
-                if jid == "unknown":
-                    m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
-                    if m:
-                        jid = m.group(1)
-
-                # Re-check with resolved jid
-                if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already in local applied history. Skipping...")
-                    continue
-
-                # Check 3: Check applied badge in top card
-                top_applied = False
-                for sel in ['.jobs-s-apply__applied-badge', '.jobs-apply-button--top-card:has-text("Applied")', 'button:has-text("Applied")']:
-                    try:
-                        if self.page.locator(sel).first.is_visible(timeout=250):
-                            top_applied = True
-                            break
-                    except:
-                        pass
-
-                if top_applied:
+                if is_applied_btn or is_applied_badge or applied_text:
                     print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) is ALREADY APPLIED on LinkedIn! Skipping...")
                     if jid != "unknown":
                         self.mark_job_applied(jid, title)
                     continue
 
-                # Check 4: Is Easy Apply button available?
+                # Check 3: Is Easy Apply button available?
                 ea_btn = self.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first
-                if not ea_btn.is_visible(timeout=1000):
+                if not ea_btn.is_visible(timeout=800):
                     print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply. Skipping...")
                     continue
 
@@ -696,21 +607,15 @@ class JobApplier:
                     time.sleep(4)
                 else:
                     print(f"  ⚠️ Form could not be auto-completed (custom questions). Discarding...")
+                    self._dismiss_modal()
                     if jid != "unknown":
                         self.session_skipped_ids.add(str(jid))
 
-                # CRITICAL: Always ensure all popups and modals are completely dismissed!
+                # Always ensure all popups and modals are dismissed before next job
                 self._ensure_all_modals_closed()
 
-                # If redirected to a standalone /jobs/view/ page, return to search page
-                if "/jobs/view/" in self.page.url and "keywords=" not in self.page.url:
-                    print("  🔄 Returning to search results page...")
-                    self.page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
-                    time.sleep(3)
-                    self._scroll_job_list()
-
             except Exception as e:
-                print(f"  ⚠️ Error processing job card #{idx+1}: {e}. Moving to next...")
+                print(f"  ⚠️ Error processing job '{title}': {e}. Moving to next...")
                 self._ensure_all_modals_closed()
                 if jid != "unknown":
                     self.session_skipped_ids.add(str(jid))
