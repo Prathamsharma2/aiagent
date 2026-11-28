@@ -105,6 +105,85 @@ class JobApplier:
         except:
             pass
 
+    def _ensure_all_modals_closed(self):
+        """Ensures that any modal, popup, or overlay is completely dismissed before proceeding."""
+        for _ in range(5):
+            # 1. Close messaging bubbles
+            self._close_messaging_overlays()
+
+            # 2. Click any Done, Dismiss, Close, or Discard buttons
+            self._click_if_visible([
+                "button:has-text('Done')",
+                "button[aria-label*='Done']",
+                "button[aria-label*='Dismiss']",
+                "button.artdeco-modal__dismiss",
+                "button[data-test-modal-close-btn]",
+                "button:has-text('Discard')",
+                "[data-test-dialog-primary-btn]",
+                "button[data-control-name='discard_application_confirm_btn']",
+                ".artdeco-modal__confirm-dialog-btn",
+                "button[aria-label*='Close']",
+                "button:has-text('No thanks')"
+            ], timeout=400)
+
+            # 3. Press Escape key
+            try:
+                self.page.keyboard.press("Escape")
+            except:
+                pass
+
+            time.sleep(0.4)
+
+            # 4. Check if any modal or overlay is still visible
+            still_open = False
+            for sel in [".artdeco-modal-overlay", "div[role='dialog']", ".jobs-easy-apply-modal", "[data-test-modal]"]:
+                try:
+                    if self.page.locator(sel).first.is_visible(timeout=200):
+                        still_open = True
+                        break
+                except:
+                    pass
+
+            if not still_open:
+                break
+
+    def _scroll_job_list(self):
+        """Scrolls the left-side job list container so LinkedIn renders all 25 jobs into the DOM."""
+        try:
+            list_container = None
+            for sel in [
+                ".jobs-search-results-list",
+                ".scaffold-layout__list",
+                "div.jobs-search-results-list",
+                ".jobs-search-results__list"
+            ]:
+                loc = self.page.locator(sel).first
+                try:
+                    if loc.is_visible(timeout=400):
+                        list_container = loc
+                        break
+                except:
+                    pass
+
+            if list_container:
+                for _ in range(5):
+                    self.page.evaluate('''el => {
+                        if (el) el.scrollTop += 700;
+                    }''', list_container.element_handle())
+                    time.sleep(0.3)
+                self.page.evaluate('''el => {
+                    if (el) el.scrollTop = 0;
+                }''', list_container.element_handle())
+                time.sleep(0.4)
+            else:
+                for _ in range(4):
+                    self.page.evaluate("window.scrollBy(0, 600)")
+                    time.sleep(0.3)
+                self.page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(0.4)
+        except Exception:
+            pass
+
     def _dismiss_modal(self):
         """Cleanly dismiss an open Easy Apply modal and confirm discard."""
         try:
@@ -342,12 +421,8 @@ class JobApplier:
                 "button:has-text('Submit')",
             ], timeout=1500):
                 print("  📊 Status: APPLIED ✅ - Application submitted successfully!")
-                time.sleep(2)
-                self._click_if_visible([
-                    "button:has-text('Done')",
-                    "button[aria-label='Dismiss']",
-                    "button.artdeco-modal__dismiss",
-                ], timeout=1500)
+                time.sleep(2.5)
+                self._ensure_all_modals_closed()
                 return True
 
             # 2. Review
@@ -379,6 +454,8 @@ class JobApplier:
                 "button[aria-label*='Done']"
             ], timeout=600):
                 print("  📊 Status: APPLIED ✅ - Application completed ('Done' clicked)!")
+                time.sleep(1)
+                self._ensure_all_modals_closed()
                 return True
 
             # 5. Fallback: try clicking any primary button
@@ -431,10 +508,11 @@ class JobApplier:
 
         return company_name, job_desc
 
-    def apply_all_on_search_page(self, search_url, resume_path, user_data=None, max_apply_per_page=10):
+    def apply_all_on_search_page(self, search_url, resume_path, user_data=None, max_apply_per_page=15):
         """
         Navigates to search results and iterates through all job cards.
-        If a job is already applied, it skips immediately to the next job.
+        Scrolls the job list so that all 25 jobs are loaded in the DOM.
+        Iterates over each card with scroll_into_view_if_needed so no cards are missed.
         Returns the number of successfully submitted applications.
         """
         if not self.browser_context:
@@ -448,66 +526,140 @@ class JobApplier:
             print(f"📊 Status: FAILED (Navigation Error: {e})")
             return 0
 
-        # Discover all job entries on the page
-        dismiss_btns = self.page.locator('button[aria-label*="Dismiss "]').all()
-        job_titles = []
-        if dismiss_btns:
-            for b in dismiss_btns:
-                aria = b.get_attribute("aria-label") or ""
-                t = aria.replace("Dismiss ", "").replace(" job", "").strip()
-                if t and t not in job_titles:
-                    job_titles.append(t)
+        # Ensure any leftover overlays or messaging windows are closed
+        self._ensure_all_modals_closed()
 
-        print(f"📋 Discovered {len(job_titles)} jobs on this search page.")
+        # Scroll the left job list to load all ~25 cards
+        self._scroll_job_list()
+
+        # Find all job card elements on the search page
+        card_selectors = [
+            "li[data-occludable-job-id]",
+            "div.job-card-container",
+            "li.jobs-search-results__list-item",
+            ".scaffold-layout__list-container li.scaffold-layout__list-item"
+        ]
+        
+        card_elements = []
+        for sel in card_selectors:
+            found = self.page.locator(sel).all()
+            if len(found) >= 5:
+                card_elements = found
+                break
+
+        if not card_elements:
+            # Fallback to finding title links
+            card_elements = self.page.locator("a.job-card-list__title--link, a.job-card-container__link").all()
+
+        total_cards = len(card_elements)
+        print(f"📋 Discovered {total_cards} job cards on this search page.")
 
         applied_count = 0
 
-        for idx, title in enumerate(job_titles):
+        for idx in range(total_cards):
             if applied_count >= max_apply_per_page:
                 print(f"🎯 Target of {max_apply_per_page} applications reached on this page.")
                 break
 
+            jid = "unknown"
+            title = "Job Role"
+
             try:
-                # Find the clickable title/card on screen
-                job_el = self.page.locator(f'text="{title}"').first
-                if not job_el.is_visible(timeout=1000):
-                    continue
-
-                job_el.scroll_into_view_if_needed()
-                job_el.click()
-                time.sleep(1.5)
-
-                # Extract Job ID
-                m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
-                jid = m.group(1) if m else "unknown"
-
-                # Check 1: In local applied history?
-                if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already applied/handled. Skipping to next...")
-                    continue
-
-                # Check 2: Marked 'Applied' on LinkedIn?
-                applied_btn = self.page.locator('button:has-text("Applied")').first
-                is_applied_btn = applied_btn.is_visible(timeout=300) if applied_btn else False
-                applied_badge = self.page.locator('.jobs-s-apply__applied-badge').first
-                is_applied_badge = applied_badge.is_visible(timeout=300) if applied_badge else False
-
-                applied_text = False
-                top_actions = self.page.locator('.jobs-apply-button--top-card, .jobs-s-apply, .jobs-details__top-card').all()
-                for ta in top_actions:
-                    if 'applied' in ta.inner_text().lower():
-                        applied_text = True
+                # Re-query card by index to avoid stale DOM references
+                card = None
+                for sel in card_selectors:
+                    cards_now = self.page.locator(sel)
+                    if cards_now.count() > idx:
+                        card = cards_now.nth(idx)
                         break
 
-                if is_applied_btn or is_applied_badge or applied_text:
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) is ALREADY APPLIED on LinkedIn! Skipping to next...")
-                    self.mark_job_applied(jid, title)
+                if not card:
                     continue
 
-                # Check 3: Is Easy Apply button available?
+                # Scroll the card into view so it is guaranteed to be rendered & clickable
+                try:
+                    card.scroll_into_view_if_needed(timeout=2500)
+                    time.sleep(0.3)
+                except:
+                    pass
+
+                # Extract Job ID
+                try:
+                    jid = card.get_attribute("data-occludable-job-id") or card.get_attribute("data-job-id") or "unknown"
+                except:
+                    pass
+
+                # Extract Job Title
+                try:
+                    title_loc = card.locator("a.job-card-list__title--link, a.job-card-container__link, strong, span[aria-hidden='true']").first
+                    if title_loc.is_visible(timeout=300):
+                        t = title_loc.inner_text().strip().split('\n')[0].strip()
+                        if t:
+                            title = t
+                except:
+                    pass
+
+                # Check 1: In local applied history or session skipped?
+                if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already applied/handled. Skipping...")
+                    continue
+
+                # Check 2: Marked 'Applied' on the card?
+                card_text = ""
+                try:
+                    card_text = card.inner_text().lower()
+                except:
+                    pass
+
+                if "applied" in card_text and "easy apply" not in card_text:
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) is already marked Applied on LinkedIn! Skipping...")
+                    if jid != "unknown":
+                        self.mark_job_applied(jid, title)
+                    continue
+
+                # Click the card to open details in right pane
+                click_target = card.locator("a.job-card-list__title--link, a.job-card-container__link").first
+                try:
+                    if click_target.is_visible(timeout=500):
+                        click_target.click(force=True)
+                    else:
+                        card.click(force=True)
+                except Exception:
+                    card.click()
+
+                time.sleep(1.5)
+
+                # Extract real JID from page URL if still unknown
+                if jid == "unknown":
+                    m = re.search(r'currentJobId=(\d+)', self.page.url) or re.search(r'/jobs/view/(\d+)', self.page.url)
+                    if m:
+                        jid = m.group(1)
+
+                # Re-check with resolved jid
+                if jid != "unknown" and (jid in self.applied_ids or str(jid) in self.session_skipped_ids):
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) already in local applied history. Skipping...")
+                    continue
+
+                # Check 3: Check applied badge in top card
+                top_applied = False
+                for sel in ['.jobs-s-apply__applied-badge', '.jobs-apply-button--top-card:has-text("Applied")', 'button:has-text("Applied")']:
+                    try:
+                        if self.page.locator(sel).first.is_visible(timeout=250):
+                            top_applied = True
+                            break
+                    except:
+                        pass
+
+                if top_applied:
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) is ALREADY APPLIED on LinkedIn! Skipping...")
+                    if jid != "unknown":
+                        self.mark_job_applied(jid, title)
+                    continue
+
+                # Check 4: Is Easy Apply button available?
                 ea_btn = self.page.locator('button:has-text("Easy Apply"), button[aria-label*="Easy Apply"]').first
-                if not ea_btn.is_visible(timeout=800):
-                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply. Skipping to next...")
+                if not ea_btn.is_visible(timeout=1000):
+                    print(f"  ⏭️ Job #{idx+1}: '{title}' (ID: {jid}) does not have Easy Apply. Skipping...")
                     continue
 
                 # Extract real company name and job description from the page
@@ -536,21 +688,30 @@ class JobApplier:
 
                 submitted = self._fill_and_submit_modal(active_resume_path, job_user_data)
                 if submitted:
-                    self.mark_job_applied(jid, title)
+                    if jid != "unknown":
+                        self.mark_job_applied(jid, title)
                     applied_count += 1
                     print(f"  ✅ Applied to '{title}'! Total on this page: {applied_count}")
                     print("  😴 Resting for 4 seconds...")
                     time.sleep(4)
                 else:
-                    print(f"  ⚠️ Form could not be auto-completed (custom questions). Discarding and moving to next...")
-                    self._dismiss_modal()
+                    print(f"  ⚠️ Form could not be auto-completed (custom questions). Discarding...")
                     if jid != "unknown":
                         self.session_skipped_ids.add(str(jid))
-                    time.sleep(1)
+
+                # CRITICAL: Always ensure all popups and modals are completely dismissed!
+                self._ensure_all_modals_closed()
+
+                # If redirected to a standalone /jobs/view/ page, return to search page
+                if "/jobs/view/" in self.page.url and "keywords=" not in self.page.url:
+                    print("  🔄 Returning to search results page...")
+                    self.page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
+                    time.sleep(3)
+                    self._scroll_job_list()
 
             except Exception as e:
-                print(f"  ⚠️ Error processing job '{title}': {e}. Moving to next...")
-                self._dismiss_modal()
+                print(f"  ⚠️ Error processing job card #{idx+1}: {e}. Moving to next...")
+                self._ensure_all_modals_closed()
                 if jid != "unknown":
                     self.session_skipped_ids.add(str(jid))
                 continue

@@ -37,7 +37,7 @@ def run_agent():
 
     # 4. Search for Jobs
     print("🏹 Opening Hunting Grounds...")
-    jobs = searcher.search_jobs_for_roles(all_target_roles, location="India", count_per_role=25)
+    jobs = searcher.search_jobs_for_roles(all_target_roles, location="India", count_per_role=50)
     print(f"📋 Total search queries queued: {len(jobs)}")
 
     applied_count = 0
@@ -77,12 +77,11 @@ def run_agent():
     finally:
         print("\n" + "="*50)
         print(f"🏁 Summary: Total jobs successfully applied = {applied_count}")
-        if applied_count == 0:
-            print("💡 TIP: Browser open hai taaki aap status dekh sakein.")
-            try:
-                input("👉 Browser band karne ke liye ENTER dabayein: ")
-            except (KeyboardInterrupt, EOFError):
-                pass
+        print("💡 Browser open hai taaki aap status aur applications dekh sakein.")
+        try:
+            input("👉 Browser band karne ke liye ENTER dabayein: ")
+        except (KeyboardInterrupt, EOFError):
+            pass
         applier.stop_session()
         print("👋 Session finished.")
 
